@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSH frp tunnel",
+    "description": "Expose this DSH through your own frps server behind an authenticated gateway"
+  }
+}

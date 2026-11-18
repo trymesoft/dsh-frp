@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "DSH 公网穿透（frp）",
+    "description": "经自有 frps + 鉴权网关把本机 DSH 暴露到公网域名"
+  }
+}

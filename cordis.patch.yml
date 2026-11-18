@@ -1,0 +1,6 @@
+# Task 1 占位行；Task 8 补全 config 与 dsh.client 声明。
+- insert:
+    - id: dsh-frp
+      name: '@local/dsh-frp'
+      config:
+        enabled: true
