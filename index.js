@@ -261,6 +261,7 @@ export async function apply(ctx, rawConfig) {
   });
 
   let gatewayPort = 0;
+  let gatewayError;
   try {
     const listened = await gateway.listen();
     gatewayPort = listened.port;
@@ -305,11 +306,12 @@ export async function apply(ctx, rawConfig) {
 
   // A dead gateway must never leave a live tunnel behind: the loopback port
   // could be reused by another service and published without authentication.
-  gateway.server.on('error', () => {
+  gateway.server.on('error', (error) => {
+    gatewayError = String(error?.message ?? error);
     void manager.killImmediately();
   });
 
-  async function ensureBinary() {
+  async function ensureBinary(allowNoChecksum = false) {
     if (config.frpc.binaryPath) {
       await fsp.access(config.frpc.binaryPath);
       currentBinary = config.frpc.binaryPath;
@@ -331,7 +333,7 @@ export async function apply(ctx, rawConfig) {
         platform: process.platform,
         arch: process.arch,
         cacheDir: dir,
-        allowNoChecksum: noChecksumConfirmed,
+        allowNoChecksum: noChecksumConfirmed || Boolean(allowNoChecksum),
         onProgress: (pct) => {
           download.pct = pct;
         },
@@ -375,6 +377,11 @@ export async function apply(ctx, rawConfig) {
     confirmNoChecksum: async () => {
       noChecksumConfirmed = true;
     },
+    bumpEpoch: async () => {
+      epoch += 1;
+      await credentials.write(PLUGIN_SCOPES.sessionEpoch, String(epoch));
+    },
+    gatewayState: () => (gatewayError ? { ok: false, message: gatewayError } : { ok: true }),
     noChecksumConfirmed: () => noChecksumConfirmed,
     platform: () => ({ platform: process.platform, arch: process.arch }),
   });
@@ -388,21 +395,16 @@ export async function apply(ctx, rawConfig) {
       return;
     }
     const url = new URL(req.url ?? '/', 'http://dsh.invalid');
-    const endpointName = url.pathname.slice(PANEL_PREFIX.length).replace(/^\//, '');
-    if (!endpointName) {
-      res.writeHead(404, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'missing endpoint' } }));
-      return;
-    }
+    const pathEndpoint = url.pathname.slice(PANEL_PREFIX.length).replace(/^\//, '');
 
-    let payload = {};
+    let body = {};
     if (req.method === 'POST' || req.method === 'PUT') {
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const text = Buffer.concat(chunks).toString('utf8');
       if (text.trim().length > 0) {
         try {
-          payload = JSON.parse(text);
+          body = JSON.parse(text);
         } catch {
           res.writeHead(400, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'invalid JSON body' } }));
@@ -411,14 +413,41 @@ export async function apply(ctx, rawConfig) {
       }
     }
 
+    // The GUI's rpc.call speaks an envelope: {type:'client-request', rpcId,
+    // method, payload} in, {type:'server-response', rpcId, result} out. A bare
+    // JSON request/response is still accepted for curl and the tests.
+    const isEnvelope = body?.type === 'client-request' && typeof body.rpcId === 'string' && typeof body.method === 'string';
+    const endpointName = isEnvelope ? body.method : pathEndpoint;
+    const payload = isEnvelope ? (body.payload ?? {}) : body;
+
+    const respond = (status, result, error) => {
+      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      if (isEnvelope) {
+        const envelopeOut = error
+          ? { type: 'server-response', rpcId: body.rpcId, result: { ok: false, error } }
+          : { type: 'server-response', rpcId: body.rpcId, result: { ok: true, value: result ?? { ok: true } } };
+        res.end(JSON.stringify(envelopeOut));
+        return;
+      }
+      res.end(JSON.stringify(error ? { error } : (result ?? { ok: true })));
+    };
+
+    if (!endpointName) {
+      respond(404, undefined, { code: 'missing-endpoint', message: 'missing endpoint', details: {} });
+      return;
+    }
+
     try {
       const result = await panelApi.endpoint(endpointName, payload);
-      res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      res.end(JSON.stringify(result ?? { ok: true }));
+      respond(200, result);
     } catch (error) {
-      const status = error?.missing ? 409 : 400;
-      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-      res.end(JSON.stringify({ error: { message: String(error?.message ?? error), missing: error?.missing ?? [] } }));
+      const missing = error?.missing ?? [];
+      const code = error?.code ?? (missing.length ? 'start-gate' : 'request-failed');
+      respond(missing.length ? 409 : 400, undefined, {
+        code: String(code),
+        message: String(error?.message ?? error),
+        details: missing.length ? { missing } : {},
+      });
     }
   };
 

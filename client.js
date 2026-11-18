@@ -65,6 +65,9 @@ window.__ModuleLoader__.load({
         gate: '启动前还需补齐：',
         gatewayPort: '网关端口',
         proxyState: '代理状态',
+        gatewayDown: '网关已停止监听，隧道无法工作；请重载插件',
+        download: '下载 frpc',
+        downloading: '下载中',
       },
       en: {
         title: 'frp tunnel',
@@ -114,6 +117,9 @@ window.__ModuleLoader__.load({
         gate: 'Still required before starting:',
         gatewayPort: 'Gateway port',
         proxyState: 'Proxy state',
+        gatewayDown: 'The gateway stopped listening, so the tunnel cannot work. Reload the plugin.',
+        download: 'Download frpc',
+        downloading: 'Downloading',
       },
     };
 
@@ -135,6 +141,18 @@ window.__ModuleLoader__.load({
       '  }',
       '}',
     ].join('\n');
+
+    /** The tunnel can be stopped while it is up, starting, or stuck in error. */
+    const canStop = (state) => state === 'running' || state === 'starting' || state === 'error' || state === 'downloading';
+
+    /** A dead gateway is its own state: the tunnel is not merely "stopped". */
+    const gatewayWarning = (status, t) => {
+      if (!status || status.gateway !== 'error') return undefined;
+      return (t.gatewayDown ?? 'Gateway is down') + (status.gatewayMessage ? ': ' + status.gatewayMessage : '');
+    };
+
+    /** A download needs explicit consent when the pinned version has no hash. */
+    const needsChecksumConsent = (status) => Boolean(status) && status.checksumAvailable === false && !status.noChecksumConfirmed;
 
     const styles = {
       wrap: { display: 'flex', flexDirection: 'column', gap: '14px', padding: '4px 0', color: 'var(--dsw-alias-text-primary, inherit)', font: 'inherit' },
@@ -223,11 +241,18 @@ window.__ModuleLoader__.load({
       const [form, setForm] = React.useState({ serverAddr: '', serverPort: '', domain: '', publicBaseUrl: '', useTLS: true, token: '', username: '', password: '', binaryPath: '' });
       const [seeded, setSeeded] = React.useState(false);
 
+      // The slot re-runs inject() on every render, so `call` is a fresh
+      // closure each time. Polling is keyed on a ref instead, otherwise every
+      // poll's setStatus would re-subscribe the effect and spin hot.
+      const callRef = React.useRef(call);
+      React.useEffect(() => {
+        callRef.current = call;
+      });
       React.useEffect(() => {
         let alive = true;
         const pull = async () => {
           try {
-            const next = await call('status', {});
+            const next = await callRef.current('status', {});
             if (!alive) return;
             setStatus(next);
             setError('');
@@ -241,7 +266,7 @@ window.__ModuleLoader__.load({
           alive = false;
           clearInterval(timer);
         };
-      }, [call]);
+      }, []);
 
       React.useEffect(() => {
         if (seeded || !status) return;
@@ -308,6 +333,7 @@ window.__ModuleLoader__.load({
         h('p', { style: styles.hint }, t.subtitle),
         status && status.message ? h('p', { style: styles.hint }, status.message) : null,
         missing.length > 0 ? h('p', { style: styles.error }, t.gate + ' ' + missing.join(', ')) : null,
+        gatewayWarning(status, t) ? h('p', { style: styles.error }, gatewayWarning(status, t)) : null,
         error ? h('p', { style: styles.error }, error) : null,
         notice ? h('p', { style: styles.hint }, notice) : null,
 
@@ -375,7 +401,7 @@ window.__ModuleLoader__.load({
             'div',
             { style: styles.row },
             h('button', { style: styles.primary, disabled: busy || state === 'running', onClick: () => run('start', {}) }, t.start),
-            h('button', { style: styles.button, disabled: busy || state !== 'running', onClick: () => run('stop', {}) }, t.stop),
+            h('button', { style: styles.button, disabled: busy || !canStop(state), onClick: () => run('stop', {}) }, t.stop),
             status && status.gatewayPort
               ? h('span', { style: styles.hint }, t.gatewayPort + ': 127.0.0.1:' + status.gatewayPort)
               : null,
@@ -391,10 +417,19 @@ window.__ModuleLoader__.load({
                 style: styles.button,
                 disabled: busy,
                 onClick: async () => {
-                  if (status && status.checksumAvailable === false) {
+                  let allowNoChecksum = false;
+                  if (needsChecksumConsent(status)) {
                     const ok = typeof confirm === 'function' ? confirm(t.confirmNoChecksum) : true;
                     if (!ok) return;
-                    await run('confirmNoChecksum', {});
+                    allowNoChecksum = true;
+                  }
+                  // Ask the Host to fetch the binary right now: the download
+                  // must not wait for the next Start, and a no-checksum refusal
+                  // is answered by consenting and retrying in the same click.
+                  try {
+                    await run('download', { allowNoChecksum });
+                  } catch {
+                    /* surfaced by run() */
                   }
                   await run('chooseBinary', { mode: 'download' });
                 },
@@ -439,6 +474,11 @@ window.__ModuleLoader__.load({
     return {
       name: NAMESPACE,
       inject: ['slots', 'locale', 'connection'],
+      canStop,
+      gatewayWarning,
+      needsChecksumConsent,
+      nginxSnippet: NGINX_SNIPPET,
+      messages: MESSAGES,
       apply(ctx) {
         const zh = MESSAGES.zh;
         const en = MESSAGES.en;

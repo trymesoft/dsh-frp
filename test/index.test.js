@@ -120,8 +120,12 @@ test('apply mounts the panel prefix with a fence and answers status', async () =
       assert.equal(unknown.captured.status, 400);
 
       assert.equal(disposers.length, 1);
-      await disposers[0]();
     } finally {
+      try {
+        if (disposers.length > 0) await disposers[0]();
+      } catch {
+        /* best effort */
+      }
       globalThis.fetch = realFetch;
     }
     const credentialsFile = path.join(home, 'dsh-frp', 'credentials.json');
@@ -143,10 +147,14 @@ test('start through the panel is refused while the gate is open', async () => {
       await registered[0].handler(fakeRequest({ method: 'POST', url: '/dsh-frp/start', body: '{}' }), res);
       assert.equal(res.captured.status, 409);
       const body = JSON.parse(res.captured.body);
-      assert.ok(Array.isArray(body.error.missing));
-      assert.ok(body.error.missing.includes('login-password'));
-      await disposers[0]();
+      assert.ok(Array.isArray(body.error.details.missing));
+      assert.ok(body.error.details.missing.includes('login-password'));
     } finally {
+      try {
+        if (disposers.length > 0) await disposers[0]();
+      } catch {
+        /* best effort */
+      }
       globalThis.fetch = realFetch;
     }
   });

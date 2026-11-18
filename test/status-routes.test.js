@@ -101,11 +101,11 @@ test('exchangeDshCookie keeps only name=value pairs from a 303', async () => {
 
 test('exchangeDshCookie refuses a non-303 answer and an empty cookie jar', async () => {
   await assert.rejects(
-    exchangeDshCookie({ authenticatedUrl: 'u', origin: 'o', fetchImpl: async () => ({ status: 401, headers: { getSetCookie: () => [] } }) }),
+    exchangeDshCookie({ authenticatedUrl: 'http://127.0.0.1:1/?token=t', origin: 'http://127.0.0.1:1', fetchImpl: async () => ({ status: 401, headers: { getSetCookie: () => [] } }) }),
     /303/,
   );
   await assert.rejects(
-    exchangeDshCookie({ authenticatedUrl: 'u', origin: 'o', fetchImpl: async () => ({ status: 303, headers: { getSetCookie: () => [] } }) }),
+    exchangeDshCookie({ authenticatedUrl: 'http://127.0.0.1:1/?token=t', origin: 'http://127.0.0.1:1', fetchImpl: async () => ({ status: 303, headers: { getSetCookie: () => [] } }) }),
     /cookie/i,
   );
 });

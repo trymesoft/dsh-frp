@@ -259,6 +259,9 @@ export function createFrpcManager(opts) {
   let restartAttempt = 0;
   let startedAt = 0;
   let stoppedManually = true;
+  // Every launch gets a generation; exits from an older one are ignored so a
+  // stop→start race cannot let a dead child clear the live child's state.
+  let generation = 0;
 
   function status() {
     return { state, message, proxyState };
@@ -369,16 +372,23 @@ export function createFrpcManager(opts) {
     restartTimer = setTimeout(() => {
       restartTimer = null;
       if (stoppedManually) return;
-      void launch();
+      // A rejected launch (disk full, bad credentials, unwritable TOML) must
+      // land in the error state: Node treats an unhandled rejection as fatal,
+      // and taking the Host down is not a failure mode this plugin may have.
+      launch().catch((error) => {
+        setState('error', String(error?.message ?? error));
+      });
     }, delay);
   }
 
   async function launch() {
+    if (handle) return; // one child at a time: never orphan a supervised process
     const binary = opts.binaryPath();
     if (!binary) {
       setState('error', 'frpc binary is not available');
       return;
     }
+    const myGeneration = (generation += 1);
     setState('starting');
     const adminPort = await allocatePort();
     const adminUser = 'dshfrp' + randomHex(4);
@@ -413,8 +423,14 @@ export function createFrpcManager(opts) {
     readStream(handle.stderr, '[stderr] ');
 
     Promise.resolve(handle.done).then(
-      (result) => onExit(result?.exitCode ?? null),
-      () => onExit(null),
+      (result) => {
+        if (myGeneration !== generation) return;
+        onExit(result?.exitCode ?? null);
+      },
+      () => {
+        if (myGeneration !== generation) return;
+        onExit(null);
+      },
     );
     void pollOnce();
   }
@@ -424,6 +440,10 @@ export function createFrpcManager(opts) {
   async function start() {
     if (starting) return starting;
     if (handle) return;
+    if (restartTimer) {
+      clearTimeout(restartTimer);
+      restartTimer = null;
+    }
     stoppedManually = false;
     consecutiveFails = 0;
     restartAttempt = 0;
@@ -439,6 +459,7 @@ export function createFrpcManager(opts) {
 
   async function stop() {
     stoppedManually = true;
+    generation += 1; // invalidate any in-flight exit handler
     stopTimers();
     const current = handle;
     handle = null;

@@ -131,3 +131,39 @@ test('the panel renders its sections and the security notice', () => {
     assert.ok(text.includes(needle), 'panel shows: ' + needle);
   }
 });
+
+test('the tunnel can be stopped from more than just the running state', () => {
+  const entry = moduleEntry();
+  const Client = entry.factory(() => fakeReact());
+  assert.equal(Client.canStop('running'), true);
+  assert.equal(Client.canStop('starting'), true);
+  assert.equal(Client.canStop('error'), true);
+  assert.equal(Client.canStop('stopped'), false);
+  assert.equal(Client.canStop(undefined), false);
+});
+
+test('a dead gateway is surfaced as its own warning', () => {
+  const entry = moduleEntry();
+  const Client = entry.factory(() => fakeReact());
+  const t = Client.messages.en;
+  assert.equal(Client.gatewayWarning({ gateway: 'ok' }, t), undefined);
+  assert.match(Client.gatewayWarning({ gateway: 'error', gatewayMessage: 'EADDRINUSE' }, t), /gateway/i);
+  assert.match(Client.gatewayWarning({ gateway: 'error', gatewayMessage: 'EADDRINUSE' }, t), /EADDRINUSE/);
+});
+
+test('a version without an embedded checksum needs consent once', () => {
+  const entry = moduleEntry();
+  const Client = entry.factory(() => fakeReact());
+  assert.equal(Client.needsChecksumConsent(undefined), false);
+  assert.equal(Client.needsChecksumConsent({ checksumAvailable: true }), false);
+  assert.equal(Client.needsChecksumConsent({ checksumAvailable: false, noChecksumConfirmed: false }), true);
+  assert.equal(Client.needsChecksumConsent({ checksumAvailable: false, noChecksumConfirmed: true }), false);
+});
+
+test('the copyable nginx snippet keeps Host and the upgrade headers', () => {
+  const entry = moduleEntry();
+  const Client = entry.factory(() => fakeReact());
+  for (const needle of ['proxy_set_header Host $host;', 'proxy_set_header Upgrade $http_upgrade;', 'proxy_read_timeout 3600s']) {
+    assert.ok(Client.nginxSnippet.includes(needle), 'snippet contains: ' + needle);
+  }
+});

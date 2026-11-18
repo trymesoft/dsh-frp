@@ -47,7 +47,16 @@ export function computeStartGate(config, credentials) {
  */
 export async function exchangeDshCookie(opts) {
   const doFetch = opts.fetchImpl ?? fetch;
-  const response = await doFetch(opts.authenticatedUrl, { redirect: 'manual' });
+  // The launch token must be presented on the GUI's own origin: the cookie we
+  // receive is scoped to the request's authority, and every proxied request
+  // later carries Host: origin. Minting on an advertised (public) URL would
+  // hand us a cookie the GUI never accepts.
+  let url = opts.authenticatedUrl;
+  const token = new URL(opts.authenticatedUrl).searchParams.get('token');
+  if (token && opts.origin) {
+    url = new URL(opts.origin).origin + '/?token=' + encodeURIComponent(token);
+  }
+  const response = await doFetch(url, { redirect: 'manual' });
   if (response.status !== 303) {
     throw new Error('DSH cookie exchange expected 303, got ' + response.status);
   }
@@ -136,6 +145,7 @@ export function createPanelApi(deps) {
     const config = deps.config();
     const credentials = await credentialSnapshot();
     const gate = computeStartGate(config, credentials);
+    const gateway = (deps.gatewayState?.() ?? { ok: true });
     const binary = deps.binaryPresent();
     const download = deps.downloadState();
     const managerStatus = deps.manager.status();
@@ -173,6 +183,8 @@ export function createPanelApi(deps) {
       })(),
       noChecksumConfirmed: deps.noChecksumConfirmed(),
       proxyState: managerStatus.proxyState,
+      gateway: gateway.ok ? 'ok' : 'error',
+      gatewayMessage: gateway.message,
       gatewayPort: deps.gatewayPort(),
       autoStart: Boolean(config?.autoStart),
       logsTail: deps.manager.logs().slice(-40),
@@ -188,8 +200,29 @@ export function createPanelApi(deps) {
       error.missing = gate.missing;
       throw error;
     }
-    await deps.ensureBinary();
+    await deps.ensureBinary(false);
     await deps.manager.start();
+    return status();
+  }
+
+  /**
+   * Download the frpc binary now, rather than waiting for the next start.
+   *
+   * A version without an embedded checksum raises NoChecksumError; the panel
+   * turns that into an explicit consent prompt and calls again with
+   * allowNoChecksum, so the documented "warn, then continue" path exists.
+   */
+  async function download(payload) {
+    try {
+      await deps.ensureBinary(Boolean(payload?.allowNoChecksum));
+    } catch (error) {
+      if (error && error.name === 'NoChecksumError') {
+        const failure = new Error(String(error.message));
+        failure.code = 'no-checksum';
+        throw failure;
+      }
+      throw error;
+    }
     return status();
   }
 
@@ -207,8 +240,14 @@ export function createPanelApi(deps) {
     }
     if (!constantTimeEqual(String((await deps.credentials.read(PLUGIN_SCOPES.loginPassword)) ?? ''), password)) {
       await deps.credentials.write(PLUGIN_SCOPES.loginPassword, password);
-      // A password change must sign every device out: bump the epoch.
-      await deps.credentials.write(PLUGIN_SCOPES.sessionEpoch, String((await readEpoch()) + 1));
+      // A password change must sign every device out. The Host passes a hook
+      // that bumps the live epoch the running SessionAuthority reads, and
+      // persists it; without the hook (bare tests) bump the record only.
+      if (typeof deps.bumpEpoch === 'function') {
+        await deps.bumpEpoch();
+      } else {
+        await deps.credentials.write(PLUGIN_SCOPES.sessionEpoch, String((await readEpoch()) + 1));
+      }
     }
     return { ok: true, restartRequired: false };
   }
@@ -273,6 +312,7 @@ export function createPanelApi(deps) {
     setFrpsToken,
     setFrpsConfig,
     chooseBinary,
+    download,
     confirmNoChecksum: async () => {
       await deps.confirmNoChecksum();
       return { ok: true };

@@ -22,6 +22,8 @@ import {
   rewriteResponseHeaders,
 } from './header-rules.js';
 
+const PUBLIC_BASE_FALLBACK = 'https://localhost';
+
 export const LOGIN_PATH = '/frp-login';
 const MAX_LOGIN_BODY = 8 * 1024;
 
@@ -358,8 +360,29 @@ export function createGateway(opts) {
     if (cookie) headers.cookie = cookie;
     else delete headers.cookie;
 
-    const path = parseRequestTarget(req.url);
+    relayUpgrade(headers, req, socket, head, 0);
+  }
+
+  /**
+   * Relay one WebSocket upgrade, filtering whatever the upstream answers.
+   *
+   * A 101 is byte-transparent from that point on, as a WebSocket pipe must be.
+   * Anything else is a plain HTTP answer travelling a WebSocket-shaped request:
+   * it goes through the same header rules as every other response (no
+   * Set-Cookie may escape, Location is rewritten), and a 401 triggers exactly
+   * one DSH cookie re-exchange before a retry.
+   */
+  function relayUpgrade(headers, req, socket, head, attempt) {
+    let target;
+    try {
+      target = new URL(opts.targetOrigin());
+    } catch {
+      refuseUpgrade(socket, 502, 'Bad Gateway');
+      return;
+    }
+
     const upstream = net.connect({ host: target.hostname, port: Number(target.port || 80) }, () => {
+      const path = parseRequestTarget(req.url);
       const lines = [req.method + ' ' + path + ' HTTP/1.1'];
       for (const [name, value] of Object.entries(headers)) {
         if (value === undefined) continue;
@@ -370,18 +393,108 @@ export function createGateway(opts) {
       if (head && head.length > 0) upstream.write(head);
     });
 
-    upstream.on('data', (chunk) => {
-      if (!socket.destroyed) socket.write(chunk);
-    });
-    socket.on('data', (chunk) => {
-      if (!upstream.destroyed) upstream.write(chunk);
-    });
+    let buffered = Buffer.alloc(0);
+    // 'pending' until the upstream answer's head is read; then 'relay' (101,
+    // keep both sockets together), 'terminal' (plain answer already written and
+    // ended) or 'retry' (re-exchanging the cookie for another attempt).
+    let mode = 'pending';
+
     const closeBoth = () => {
       if (!upstream.destroyed) upstream.destroy();
       if (!socket.destroyed) socket.destroy();
     };
-    upstream.on('error', closeBoth);
-    upstream.on('close', closeBoth);
+
+    const onHead = (headText, rest) => {
+      const lines = headText.split('\r\n');
+      const statusLine = lines.shift() ?? '';
+      const match = statusLine.match(/^HTTP\/\d\.\d (\d{3})/);
+      const status = match ? Number(match[1]) : 502;
+
+      if (status === 101) {
+        mode = 'relay';
+        if (!socket.destroyed) socket.write(headText + '\r\n\r\n');
+        if (rest.length > 0 && !socket.destroyed) socket.write(rest);
+        upstream.on('data', (chunk) => {
+          if (!socket.destroyed) socket.write(chunk);
+        });
+        socket.on('data', (chunk) => {
+          if (!upstream.destroyed) upstream.write(chunk);
+        });
+        upstream.on('error', closeBoth);
+        upstream.on('close', closeBoth);
+        socket.on('error', closeBoth);
+        socket.on('close', closeBoth);
+        return;
+      }
+
+      const rawHeaders = {};
+      for (const line of lines) {
+        if (!line) continue;
+        const index = line.indexOf(':');
+        if (index <= 0) continue;
+        const name = line.slice(0, index).trim().toLowerCase();
+        const value = line.slice(index + 1).trim();
+        if (rawHeaders[name] === undefined) rawHeaders[name] = value;
+        else if (Array.isArray(rawHeaders[name])) rawHeaders[name].push(value);
+        else rawHeaders[name] = [rawHeaders[name], value];
+      }
+
+      const { headers: outHeaders, harvestedCookies } = rewriteResponseHeaders(rawHeaders, { publicBaseUrl: publicBaseUrl() });
+      for (const harvested of harvestedCookies) opts.onDshCookie(harvested);
+
+      if (status === 401 && attempt === 0) {
+        mode = 'retry';
+        upstream.destroy();
+        Promise.resolve(opts.onAuthInvalid())
+          .then(() => {
+            const cookie = opts.dshCookie();
+            const retryHeaders = { ...headers };
+            if (cookie) retryHeaders.cookie = cookie;
+            relayUpgrade(retryHeaders, req, socket, head, attempt + 1);
+          })
+          .catch(() => refuseUpgrade(socket, 502, 'Bad Gateway'));
+        return;
+      }
+
+      mode = 'terminal';
+      const out = [statusLine];
+      for (const [name, value] of Object.entries(outHeaders)) {
+        if (Array.isArray(value)) for (const entry of value) out.push(name + ': ' + entry);
+        else out.push(name + ': ' + value);
+      }
+      out.push('connection: close');
+      if (!socket.destroyed) {
+        socket.write(out.join('\r\n') + '\r\n\r\n');
+        if (rest.length > 0) socket.write(rest);
+        socket.end();
+      }
+      upstream.destroy();
+    };
+
+    upstream.on('data', (chunk) => {
+      if (mode !== 'pending') return;
+      buffered = Buffer.concat([buffered, chunk]);
+      const index = buffered.indexOf('\r\n\r\n');
+      if (index === -1) {
+        if (buffered.length > 64 * 1024) {
+          refuseUpgrade(socket, 502, 'Bad Gateway');
+          upstream.destroy();
+        }
+        return;
+      }
+      const headText = buffered.subarray(0, index).toString('latin1');
+      const rest = buffered.subarray(index + 4);
+      // Stop accumulating; the 101 path attaches its own data handler.
+      upstream.removeAllListeners('data');
+      onHead(headText, rest);
+    });
+    upstream.on('error', () => {
+      if (mode === 'pending') refuseUpgrade(socket, 502, 'Bad Gateway');
+      else if (mode === 'relay') closeBoth();
+    });
+    upstream.on('close', () => {
+      if (mode === 'relay') closeBoth();
+    });
     socket.on('error', closeBoth);
     socket.on('close', closeBoth);
   }
