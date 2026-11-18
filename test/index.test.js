@@ -75,14 +75,17 @@ async function withTempHome(fn) {
   }
 }
 
-test('Config exposes the documented defaults', () => {
-  assert.equal(Config.enabled, true);
-  assert.equal(Config.autoStart, false);
-  assert.equal(Config.frps.serverPort, 7000);
-  assert.equal(Config.frps.transport.useTLS, true);
-  assert.equal(Config.frpc.downloadVersion, '0.72.0');
-  assert.equal(Config.gateway.sessionTtlHours, 12);
-  assert.equal(Object.prototype.hasOwnProperty.call(Config, 'token'), false, 'no secret keys in Config');
+test('the schema normalizes an empty row to the documented defaults', () => {
+  const result = Config['~standard'].validate({});
+  assert.equal(result.issues, undefined);
+  const defaults = result.value;
+  assert.equal(defaults.enabled, true);
+  assert.equal(defaults.autoStart, false);
+  assert.equal(defaults.frps.serverPort, 7000);
+  assert.equal(defaults.frps.transport.useTLS, true);
+  assert.equal(defaults.frpc.downloadVersion, '0.72.0');
+  assert.equal(defaults.gateway.sessionTtlHours, 12);
+  assert.equal(Object.prototype.hasOwnProperty.call(defaults, 'token'), false, 'no secret keys in Config');
 });
 
 test('apply mounts the panel prefix with a fence and answers status', async () => {
@@ -149,6 +152,74 @@ test('start through the panel is refused while the gate is open', async () => {
       const body = JSON.parse(res.captured.body);
       assert.ok(Array.isArray(body.error.details.missing));
       assert.ok(body.error.details.missing.includes('login-password'));
+    } finally {
+      try {
+        if (disposers.length > 0) await disposers[0]();
+      } catch {
+        /* best effort */
+      }
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+test('Config is a Standard Schema, the shape cordis validates through', () => {
+  // cordis calls Config['~standard'].validate(raw); a bare object makes it
+  // throw "cannot read properties of undefined (reading 'validate')".
+  assert.equal(typeof Config['~standard'].validate, 'function');
+  assert.equal(Config['~standard'].version, 1);
+
+  const good = Config['~standard'].validate({
+    frps: { serverAddr: 'frp.example.com', serverPort: 17000, domain: 'dsh.example.com' },
+    publicBaseUrl: 'https://dsh.example.com',
+  });
+  assert.equal(good.issues, undefined);
+  assert.equal(good.value.frps.serverPort, 17000);
+  assert.equal(good.value.publicBaseUrl, 'https://dsh.example.com');
+
+  const bad = Config['~standard'].validate({ frps: { serverPort: 70000, domain: 'not a domain' }, publicBaseUrl: 'ftp://x' });
+  assert.ok(Array.isArray(bad.issues));
+  assert.ok(bad.issues.length >= 3);
+  assert.ok(bad.issues.some((issue) => issue.path.join('.') === 'frps.serverPort'));
+});
+
+test('secrets go into credential records as grant payloads when the service is present', async () => {
+  await withTempHome(async (home) => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ status: 303, headers: { getSetCookie: () => ['a=b; Path=/'] } });
+
+    const records = new Map();
+    const writes = [];
+    const { ctx, disposers } = makeCtx();
+    ctx.get = (serviceName) => {
+      if (serviceName !== 'credentials') return undefined;
+      return {
+        async readRecord(key) {
+          return records.get(key);
+        },
+        async modifyRecord(key, mutate) {
+          assert.equal(typeof mutate, 'function', 'the record API takes a mutator, not a value');
+          const record = await mutate();
+          writes.push(key);
+          records.set(key, record);
+          return record;
+        },
+      };
+    };
+
+    try {
+      await apply(ctx, { ...Config });
+      const secret = records.get('dsh-frp/session-secret');
+      assert.ok(secret, 'the session secret is stored as a record');
+      assert.equal(secret.kind, 'grant');
+      assert.equal(typeof secret.payload.value, 'string');
+      assert.ok(secret.payload.value.length >= 32);
+      assert.equal(records.get('dsh-frp/session-epoch').payload.value, '1');
+
+      // The 0600 file fallback must stay unused while the service is present.
+      const fallback = path.join(home, 'dsh-frp', 'credentials.json');
+      await assert.rejects(fs.promises.stat(fallback));
+      assert.deepEqual(writes.sort(), ['dsh-frp/session-epoch', 'dsh-frp/session-secret']);
     } finally {
       try {
         if (disposers.length > 0) await disposers[0]();

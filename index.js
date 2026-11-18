@@ -22,8 +22,8 @@ const PANEL_PREFIX = '/dsh-frp';
 const ENTRY_ID = 'dsh-frp';
 const COOKIE_NAME = 'dsh-frp-session';
 
-/** Loader-row defaults; the Host validates this shape when it loads the row. */
-export const Config = {
+/** Loader-row defaults, used for documentation and for canonicalConfig's fallbacks. */
+const CONFIG_DEFAULTS = {
   enabled: true,
   autoStart: false,
   publicBaseUrl: '',
@@ -40,6 +40,94 @@ export const Config = {
   },
   gateway: { sessionTtlHours: 12 },
   login: { username: '' },
+};
+
+const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i;
+
+function configIssues(raw) {
+  const issues = [];
+  const value = raw ?? {};
+  const text = (candidate) => (candidate === undefined || candidate === null ? '' : String(candidate));
+
+  const publicBaseUrl = text(value.publicBaseUrl).trim();
+  if (publicBaseUrl) {
+    let parsed;
+    try {
+      parsed = new URL(publicBaseUrl);
+    } catch {
+      issues.push({ message: 'publicBaseUrl must be a valid URL', path: ['publicBaseUrl'] });
+    }
+    if (parsed && !['http:', 'https:'].includes(parsed.protocol)) {
+      issues.push({ message: 'publicBaseUrl must use http or https', path: ['publicBaseUrl'] });
+    }
+    if (parsed && (parsed.pathname !== '/' || parsed.search || parsed.hash)) {
+      issues.push({ message: 'publicBaseUrl must be an origin without path, query or hash', path: ['publicBaseUrl'] });
+    }
+  }
+
+  const port = value.frps?.serverPort;
+  if (port !== undefined && port !== null && (!Number.isInteger(Number(port)) || Number(port) < 1 || Number(port) > 65535)) {
+    issues.push({ message: 'frps.serverPort must be an integer TCP port', path: ['frps', 'serverPort'] });
+  }
+
+  const domain = text(value.frps?.domain).trim();
+  if (domain && !DOMAIN_RE.test(domain)) {
+    issues.push({ message: 'frps.domain must be a plain domain name', path: ['frps', 'domain'] });
+  }
+
+  const newlineChecks = [
+    ['frps.serverAddr', text(value.frps?.serverAddr)],
+    ['login.username', text(value.login?.username)],
+    ['frpc.binaryPath', text(value.frpc?.binaryPath)],
+    ['frpc.downloadVersion', text(value.frpc?.downloadVersion)],
+    ['frpc.downloadBaseUrl', text(value.frpc?.downloadBaseUrl)],
+  ];
+  for (const [key, candidate] of newlineChecks) {
+    if (/[\r\n]/.test(candidate)) issues.push({ message: key + ' must not contain a newline', path: key.split('.') });
+  }
+
+  const baseUrl = text(value.frpc?.downloadBaseUrl).trim();
+  if (baseUrl) {
+    let parsed;
+    try {
+      parsed = new URL(baseUrl);
+    } catch {
+      issues.push({ message: 'frpc.downloadBaseUrl must be a valid URL', path: ['frpc', 'downloadBaseUrl'] });
+    }
+    if (parsed) {
+      const loopback = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.hostname);
+      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback)) {
+        issues.push({ message: 'frpc.downloadBaseUrl must use https (http only for a loopback mirror)', path: ['frpc', 'downloadBaseUrl'] });
+      }
+    }
+  }
+
+  const ttl = value.gateway?.sessionTtlHours;
+  if (ttl !== undefined && ttl !== null && (!Number.isFinite(Number(ttl)) || Number(ttl) <= 0)) {
+    issues.push({ message: 'gateway.sessionTtlHours must be a positive number', path: ['gateway', 'sessionTtlHours'] });
+  }
+
+  return issues;
+}
+
+/**
+ * Loader-row schema.
+ *
+ * cordis resolves a plugin's config through the Standard Schema interface
+ * (Config['~standard'].validate(raw)). A bare defaults object is not that
+ * interface, and cordis then throws "Cannot read properties of undefined
+ * (reading 'validate')" while mounting the row.
+ */
+export const Config = {
+  '~standard': {
+    version: 1,
+    vendor: 'dsh-frp',
+    validate(raw) {
+      const issues = configIssues(raw);
+      if (issues.length > 0) return { issues };
+      return { value: canonicalConfig(raw ?? CONFIG_DEFAULTS) };
+    },
+  },
 };
 
 function dataDirOf() {
@@ -61,7 +149,7 @@ function canonicalConfig(config) {
     frpc: {
       binaryPath: String(config?.frpc?.binaryPath ?? ''),
       downloadVersion: String(config?.frpc?.downloadVersion ?? FRP_VERSION),
-      downloadBaseUrl: String(config?.frpc?.downloadBaseUrl ?? Config.frpc.downloadBaseUrl),
+      downloadBaseUrl: String(config?.frpc?.downloadBaseUrl ?? CONFIG_DEFAULTS.frpc.downloadBaseUrl),
     },
     gateway: { sessionTtlHours: Number(config?.gateway?.sessionTtlHours ?? 12) },
     login: { username: String(config?.login?.username ?? '') },
@@ -100,10 +188,17 @@ async function createCredentialStore(ctx, dir) {
     async read(key) {
       if (usable) {
         try {
+          // A record is either an api-key or an owner-defined grant; our
+          // secrets ride in the opaque grant payload, as the seam intends.
           const record = await service.readRecord(key);
-          if (typeof record === 'string') return record;
-          if (record && typeof record.value === 'string') return record.value;
-          if (record && typeof record.secret === 'string') return record.secret;
+          if (!record) return undefined;
+          if (record.kind === 'grant') {
+            const payload = record.payload;
+            if (typeof payload === 'string') return payload;
+            if (payload && typeof payload.value === 'string') return payload.value;
+            return undefined;
+          }
+          if (record.kind === 'api-key' && typeof record.key === 'string') return record.key;
           return undefined;
         } catch {
           return undefined;
@@ -113,7 +208,9 @@ async function createCredentialStore(ctx, dir) {
     },
     async write(key, value) {
       if (usable) {
-        await service.modifyRecord(key, value);
+        // The record API takes a mutator because a correct write may depend on
+        // the current value (read-decide-replace under one lock).
+        await service.modifyRecord(key, () => Promise.resolve({ kind: 'grant', payload: { value: String(value) } }));
         return;
       }
       const current = await loadFile();
