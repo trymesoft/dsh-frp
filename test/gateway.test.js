@@ -6,11 +6,12 @@ import net from 'node:net';
 import { createGateway, loginHtml } from '../gateway.js';
 import { SessionAuthority, LoginThrottle } from '../gateway-session.js';
 
+const RETRY_COOKIE = 'dsh-auth-abc=RETRY; Path=/';
 const DOMAIN = 'dsh.example.com';
 const PUBLIC_BASE = 'https://' + DOMAIN;
 const USER = 'owner';
 const PASSWORD = 'correct horse battery';
-const DSH_COOKIE = 'dsh-auth-abc=DSH-SIGNED-VALUE';
+const DSH_COOKIE = 'dsh-auth-abc=INITIAL; Path=/';
 
 function startStub() {
   const seen = [];
@@ -27,7 +28,7 @@ function startStub() {
       return;
     }
     if (req.url === '/unauth') {
-      if (req.headers.cookie === 'dsh-auth-abc=REFRESHED-VALUE') {
+      if (req.headers.cookie === RETRY_COOKIE) {
         res.writeHead(200, { 'content-type': 'text/plain' });
         res.end('upstream-body:/unauth');
       } else {
@@ -66,7 +67,7 @@ async function makeGateway(stub, overrides = {}) {
     epoch: () => 1,
     ttlHours: 12,
     secure: false,
-    cookieName: 'dsh-frp-session',
+    cookieName: 'gw-session',
   });
   const gateway = createGateway({
     targetOrigin: () => 'http://127.0.0.1:' + stub.port,
@@ -81,7 +82,7 @@ async function makeGateway(stub, overrides = {}) {
     onAuthInvalid: async () => {
       state.authInvalidCalls += 1;
       state.exchanges += 1;
-      state.dshCookie = 'dsh-auth-abc=REFRESHED-VALUE';
+      state.dshCookie = RETRY_COOKIE;
     },
     authority,
     checkLogin: async (username, password) => username === USER && password === PASSWORD,
@@ -185,7 +186,7 @@ test('login: wrong password is redirected back with a fixed error param, right p
     assert.equal(good.status, 302);
     assert.equal(good.headers.location, '/');
     const cookie = sessionCookieOf(good);
-    assert.ok(cookie && cookie.startsWith('dsh-frp-session='), 'a gateway session cookie is set');
+    assert.ok(cookie && cookie.startsWith('gw-session='), 'a gateway session cookie is set');
     assert.match((good.headers['set-cookie'] && good.headers['set-cookie'][0]) ?? '', /HttpOnly/);
   } finally {
     await gateway.stop();
@@ -284,9 +285,9 @@ test('an upstream 401 triggers exactly one re-exchange and the retry succeeds', 
       onAuthInvalid: async () => {
         state.authInvalidCalls += 1;
         refreshed = true;
-        state.dshCookie = 'dsh-auth-abc=REFRESHED-VALUE';
+        state.dshCookie = RETRY_COOKIE;
       },
-      dshCookie: () => (refreshed ? 'dsh-auth-abc=REFRESHED-VALUE' : DSH_COOKIE),
+      dshCookie: () => (refreshed ? RETRY_COOKIE : DSH_COOKIE),
     },
   });
   try {
@@ -295,7 +296,7 @@ test('an upstream 401 triggers exactly one re-exchange and the retry succeeds', 
     assert.equal(state.authInvalidCalls, 1);
     assert.equal(res.status, 200, 'the retried request uses the refreshed cookie');
     assert.equal(res.body, 'upstream-body:/unauth');
-    assert.equal(stub.seen.at(-1).headers.cookie, 'dsh-auth-abc=REFRESHED-VALUE');
+    assert.equal(stub.seen.at(-1).headers.cookie, RETRY_COOKIE);
   } finally {
     await gateway.stop();
     stub.server.close();

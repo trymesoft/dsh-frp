@@ -7,9 +7,13 @@
 import fsp from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import http from 'node:http';
+import net from 'node:net';
+import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+
+import { renderFrpcToml, randomProxyNameSuffix } from './frpc-config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -180,3 +184,286 @@ export async function ensureFrpcBinary(opts) {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Process supervision
+// ---------------------------------------------------------------------------
+
+const LOG_LIMIT = 500;
+
+function randomHex(bytes) {
+  return randomBytes(bytes).toString('hex');
+}
+
+/** Ask the OS for a free loopback port (admin API), then release it. */
+export function allocatePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+function adminGet({ port, user, password }, urlPath, timeoutMs = 2000) {
+  return new Promise((resolve, reject) => {
+    const auth = 'Basic ' + Buffer.from(user + ':' + password).toString('base64');
+    const req = http.request({ host: '127.0.0.1', port, path: urlPath, method: 'GET', headers: { authorization: auth }, timeout: timeoutMs }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
+      res.on('error', reject);
+    });
+    req.on('timeout', () => {
+      req.destroy(new Error('admin API timeout'));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/**
+ * Supervise an frpc process for the single DSH tunnel.
+ *
+ * State source is frpc's own admin API, never parsed stdout: this manager only
+ * knows four process states (stopped/starting/running/error); the panel adds
+ * the configuration states on top.
+ *
+ * @param {object} opts
+ * @param {(spec: object) => object} opts.spawn  subprocess.spawn-shaped spawner
+ * @param {(content: string) => Promise<string>} opts.writeToml  writes 0600, returns path
+ * @param {() => string | undefined} opts.binaryPath
+ * @param {() => object} opts.config  {serverAddr, serverPort, authToken, useTls, domain}
+ * @param {() => number} opts.gatewayPort
+ * @param {(creds: {user: string, password: string}) => Promise<void>} opts.persistAdminCreds
+ * @param {number} [opts.adminPollMs]
+ * @param {{initialMs: number, maxMs: number, maxConsecutiveFails: number}} [opts.backoff]
+ */
+export function createFrpcManager(opts) {
+  const pollMs = opts.adminPollMs ?? 1500;
+  const backoff = { initialMs: 1000, maxMs: 60_000, maxConsecutiveFails: 5, ...(opts.backoff ?? {}) };
+
+  const lines = [];
+  const listeners = new Set();
+  let state = 'stopped';
+  let message;
+  let proxyState;
+  let handle = null;
+  let admin = null;
+  let currentName = null;
+  let pollTimer = null;
+  let restartTimer = null;
+  let consecutiveFails = 0;
+  let restartAttempt = 0;
+  let startedAt = 0;
+  let stoppedManually = true;
+
+  function status() {
+    return { state, message, proxyState };
+  }
+
+  function emit() {
+    const snapshot = status();
+    for (const listener of listeners) {
+      try {
+        listener(snapshot);
+      } catch {
+        /* a broken listener must not break supervision */
+      }
+    }
+  }
+
+  function setState(next, nextMessage) {
+    state = next;
+    message = nextMessage;
+    emit();
+  }
+
+  function pushLine(line) {
+    if (!line) return;
+    lines.push(line);
+    if (lines.length > LOG_LIMIT) lines.splice(0, lines.length - LOG_LIMIT);
+  }
+
+  function readStream(stream, prefix) {
+    if (!stream) return;
+    let buffer = '';
+    stream.on('data', (chunk) => {
+      buffer += chunk.toString('utf8');
+      let index = buffer.indexOf('\n');
+      while (index !== -1) {
+        pushLine(prefix + buffer.slice(0, index).replace(/\r$/, ''));
+        buffer = buffer.slice(index + 1);
+        index = buffer.indexOf('\n');
+      }
+      if (buffer.length > 8192) {
+        pushLine(prefix + buffer);
+        buffer = '';
+      }
+    });
+    stream.on('error', () => {
+      /* the exit path reports the failure */
+    });
+  }
+
+  function stopTimers() {
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+    if (restartTimer) clearTimeout(restartTimer);
+    restartTimer = null;
+  }
+
+  async function pollOnce() {
+    if (!admin || state === 'stopped' || state === 'error') return;
+    try {
+      const health = await adminGet(admin, '/healthz');
+      if (health.status !== 200) throw new Error('healthz ' + health.status);
+      const statusRes = await adminGet(admin, '/api/status');
+      if (statusRes.status !== 200) throw new Error('status ' + statusRes.status);
+      const parsed = JSON.parse(statusRes.body);
+      const proxy = (parsed.proxies ?? []).find((entry) => entry.name === currentName);
+      proxyState = proxy?.status;
+      if (proxy?.status === 'running') {
+        consecutiveFails = 0;
+        restartAttempt = 0;
+        if (state !== 'running') setState('running');
+      } else if (state === 'starting') {
+        message = 'frpc is up, waiting for the proxy to register';
+      }
+    } catch {
+      if (state === 'running') {
+        // The process may still be alive while its admin API is unreachable;
+        // fall back to starting until polling says otherwise.
+        proxyState = undefined;
+        setState('starting', 'frpc admin API is not answering');
+      }
+    } finally {
+      if (state !== 'stopped' && state !== 'error') {
+        pollTimer = setTimeout(() => {
+          void pollOnce();
+        }, pollMs);
+      }
+    }
+  }
+
+  function onExit(exitCode) {
+    handle = null;
+    admin = null;
+    stopTimers();
+    if (stoppedManually || state === 'stopped' || state === 'error') return;
+
+    const fast = Date.now() - startedAt < 5000;
+    consecutiveFails = fast ? consecutiveFails + 1 : 0;
+    proxyState = undefined;
+
+    if (consecutiveFails >= backoff.maxConsecutiveFails) {
+      setState('error', 'frpc failed ' + consecutiveFails + ' times in a row (last exit code ' + String(exitCode) + ')');
+      return;
+    }
+
+    const delay = Math.min(backoff.initialMs * 2 ** restartAttempt, backoff.maxMs);
+    restartAttempt += 1;
+    setState('starting', 'frpc exited (' + String(exitCode) + '), restarting in ' + delay + 'ms');
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      if (stoppedManually) return;
+      void launch();
+    }, delay);
+  }
+
+  async function launch() {
+    const binary = opts.binaryPath();
+    if (!binary) {
+      setState('error', 'frpc binary is not available');
+      return;
+    }
+    setState('starting');
+    const adminPort = await allocatePort();
+    const adminUser = 'dshfrp' + randomHex(4);
+    const adminPassword = randomBytes(18).toString('base64url');
+    await opts.persistAdminCreds({ user: adminUser, password: adminPassword });
+    currentName = 'dsh-frp-' + randomProxyNameSuffix();
+
+    const config = opts.config();
+    const toml = renderFrpcToml({
+      serverAddr: config.serverAddr,
+      serverPort: config.serverPort,
+      authToken: config.authToken,
+      useTls: config.useTls,
+      domain: config.domain,
+      localPort: opts.gatewayPort(),
+      adminPort,
+      adminUser,
+      adminPassword,
+      proxyName: currentName,
+    });
+    const tomlPath = await opts.writeToml(toml);
+
+    admin = { port: adminPort, user: adminUser, password: adminPassword };
+    startedAt = Date.now();
+    handle = opts.spawn({
+      argv: [binary, '-c', tomlPath],
+      cwd: path.dirname(tomlPath),
+      stdio: { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' },
+      graceMs: 5000,
+    });
+    readStream(handle.stdout, '');
+    readStream(handle.stderr, '[stderr] ');
+
+    Promise.resolve(handle.done).then(
+      (result) => onExit(result?.exitCode ?? null),
+      () => onExit(null),
+    );
+    void pollOnce();
+  }
+
+  let starting = null;
+
+  async function start() {
+    if (starting) return starting;
+    if (handle) return;
+    stoppedManually = false;
+    consecutiveFails = 0;
+    restartAttempt = 0;
+    starting = (async () => {
+      try {
+        await launch();
+      } finally {
+        starting = null;
+      }
+    })();
+    return starting;
+  }
+
+  async function stop() {
+    stoppedManually = true;
+    stopTimers();
+    const current = handle;
+    handle = null;
+    admin = null;
+    proxyState = undefined;
+    if (current) {
+      try {
+        await current.terminate();
+      } catch {
+        /* the process is already gone */
+      }
+    }
+    setState('stopped');
+  }
+
+  return {
+    start,
+    stop,
+    killImmediately: stop,
+    status,
+    logs: () => lines.slice(),
+    onStateChange(callback) {
+      listeners.add(callback);
+      return () => listeners.delete(callback);
+    },
+  };
+}
+

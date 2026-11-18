@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { constantTimeEqual, SessionAuthority, LoginThrottle } from '../gateway-session.js';
 
-const SECRET = 'kernel-secret-for-tests';
+const SECRET = 'signing-secret-for-tests';
 const HOUR = 3600 * 1000;
 
 function makeAuthority(overrides = {}) {
@@ -13,7 +13,7 @@ function makeAuthority(overrides = {}) {
     epoch: () => epoch,
     ttlHours: 12,
     secure: false,
-    cookieName: 'dsh-frp-session',
+    cookieName: 'gw-session',
   });
   return {
     authority,
@@ -65,11 +65,11 @@ test('expired cookies and tampered payloads are rejected', () => {
 test('a cookie signed with another secret is rejected', () => {
   const { authority } = makeAuthority();
   const foreign = new SessionAuthority({
-    signingSecret: 'another-secret',
+    signingSecret: '{{SECRET_3dkmeadw}}',
     epoch: () => 1,
     ttlHours: 12,
     secure: false,
-    cookieName: 'dsh-frp-session',
+    cookieName: 'gw-session',
   });
   const now = 1_700_000_000_000;
   assert.equal(authority.verify(foreign.issue(now), now), false);
@@ -79,13 +79,13 @@ test('session cookie string carries HttpOnly, SameSite=Strict, Path=/ and no Dom
   const { authority } = makeAuthority();
   const now = 1_700_000_000_000;
   const header = authority.sessionCookieString(authority.issue(now));
-  assert.match(header, /^dsh-frp-session=/);
+  assert.match(header, /^gw-session=/);
   assert.match(header, /HttpOnly/);
   assert.match(header, /SameSite=Strict/);
   assert.match(header, /Path=\//);
   assert.doesNotMatch(header, /Domain=/i);
   assert.doesNotMatch(header, /Secure/);
-  assert.equal(authority.name(), 'dsh-frp-session');
+  assert.equal(authority.name(), 'gw-session');
 });
 
 test('secure mode uses the __Host- prefix and adds Secure', () => {
@@ -94,13 +94,13 @@ test('secure mode uses the __Host- prefix and adds Secure', () => {
     epoch: () => 1,
     ttlHours: 12,
     secure: true,
-    cookieName: 'dsh-frp-session',
+    cookieName: 'gw-session',
   });
   const now = 1_700_000_000_000;
   const header = authority.sessionCookieString(authority.issue(now));
-  assert.match(header, /^__Host-dsh-frp-session=/);
+  assert.match(header, /^__Host-gw-session=/);
   assert.match(header, /Secure/);
-  assert.equal(authority.name(), '__Host-dsh-frp-session');
+  assert.equal(authority.name(), '__Host-gw-session');
 });
 
 test('LoginThrottle ramps 1s → 2s → 4s … capped at 30s', () => {

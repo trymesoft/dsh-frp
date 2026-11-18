@@ -50,13 +50,13 @@ test('CHECKSUMS carries the pinned 0.72.0 entry for darwin arm64', () => {
 });
 
 test('sha256File matches the archive hash', async () => {
-  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-frp-sha-'));
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
   const fixture = await makeFixture(workDir);
   assert.equal(await sha256File(fixture.archive), fixture.good);
 });
 
 test('a verified archive is extracted, made executable and cached', async () => {
-  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-frp-dl-'));
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
   const cacheDir = path.join(workDir, 'cache');
   const fixture = await makeFixture(workDir);
   const { server, seen, port } = await serve(fixture.bytes);
@@ -87,7 +87,7 @@ test('a verified archive is extracted, made executable and cached', async () => 
 });
 
 test('a corrupted download is deleted and rejected', async () => {
-  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-frp-bad-'));
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
   const cacheDir = path.join(workDir, 'cache');
   const fixture = await makeFixture(workDir, true);
   const { server, port } = await serve(fixture.bytes);
@@ -119,7 +119,7 @@ test('a non-loopback plain-http download base URL is refused', async () => {
       baseUrl: 'http://mirror.example.com/frp',
       platform: PLATFORM,
       arch: ARCH,
-      cacheDir: path.join(os.tmpdir(), 'dsh-frp-never'),
+      cacheDir: path.join(os.tmpdir(), 'test'),
       expectedSha256: 'deadbeef',
     }),
     /https/i,
@@ -127,7 +127,7 @@ test('a non-loopback plain-http download base URL is refused', async () => {
 });
 
 test('an unknown version with no embedded checksum needs explicit consent', async () => {
-  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-frp-nohash-'));
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
   const cacheDir = path.join(workDir, 'cache');
   const fixture = await makeFixture(workDir, false, '9.9.9');
   const { server, port } = await serve(fixture.bytes);
