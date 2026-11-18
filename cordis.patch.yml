@@ -1,6 +1,23 @@
-# Task 1 占位行；Task 8 补全 config 与 dsh.client 声明。
+# dsh-frp: host half row. The Client half is declared in package.json
+# (dsh.bundle.patch + dsh.client), and the panel lives in the bundle page.
 - insert:
     - id: dsh-frp
       name: '@local/dsh-frp'
       config:
         enabled: true
+        autoStart: false
+        publicBaseUrl: ''
+        frps:
+          serverAddr: ''
+          serverPort: 7000
+          domain: ''
+          transport:
+            useTLS: true
+        frpc:
+          binaryPath: ''
+          downloadVersion: '0.72.0'
+          downloadBaseUrl: 'https://github.com/fatedier/frp/releases/download'
+        gateway:
+          sessionTtlHours: 12
+        login:
+          username: ''
