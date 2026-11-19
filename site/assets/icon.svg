@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="dsh-frp tunnel">
+  <defs>
+    <linearGradient id="tunnel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4c8dff"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="58" height="58" rx="14" fill="url(#tunnel)" opacity="0.14"/>
+  <rect x="3.75" y="3.75" width="56.5" height="56.5" rx="13.25" fill="none" stroke="url(#tunnel)" stroke-width="1.5"/>
+  <path d="M14 32h10M40 32h10" stroke="url(#tunnel)" stroke-width="3.4" stroke-linecap="round"/>
+  <path d="M30 22c6 0 6 20 12 20M34 22c6 0 6 20 12 20" fill="none" stroke="url(#tunnel)" stroke-width="2.6" stroke-linecap="round" opacity="0.9"/>
+  <circle cx="20" cy="32" r="3" fill="url(#tunnel)"/>
+  <circle cx="44" cy="32" r="3" fill="url(#tunnel)"/>
+  <path d="M25 27l3 5-3 5" fill="none" stroke="url(#tunnel)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M39 27l-3 5 3 5" fill="none" stroke="url(#tunnel)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

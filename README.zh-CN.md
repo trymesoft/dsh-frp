@@ -11,7 +11,7 @@
 ![DSH](https://img.shields.io/badge/DSH-0.2.2--rc.5-4c8dff)
 ![dependencies](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)
 
-[English](README.md) · [架构说明](docs/architecture.md) · [插件使用说明](docs/DETAIL.zh.md)
+[English](README.md) · [网站](https://dsh-frp.tryme.cc) · [架构说明](docs/architecture.md) · [插件使用说明](docs/DETAIL.zh.md)
 
 </div>
 

@@ -1,0 +1,1045 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh-frp — put your DSH Web GUI on your own domain</title>
+<meta name="description" content="A DeepSeek Harness bundle that runs an frpc tunnel to your own frps and puts an authenticated gateway in front of the local Web GUI. DSH's signed cookie never leaves the Host process.">
+<link rel="canonical" href="https://dsh-frp.tryme.cc/">
+<meta name="theme-color" content="#070b14">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://dsh-frp.tryme.cc/">
+<meta property="og:title" content="dsh-frp — put your DSH Web GUI on your own domain">
+<meta property="og:description" content="Your own frps, an frpc tunnel managed for you, and a login gateway in front. DSH's signed cookie never reaches the browser.">
+<meta property="og:image" content="https://dsh-frp.tryme.cc/assets/social-preview.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="dsh-frp — put your DSH Web GUI on your own domain">
+<meta name="twitter:description" content="Your own frps, an frpc tunnel managed for you, and a login gateway in front. DSH's signed cookie never reaches the browser.">
+<meta name="twitter:image" content="https://dsh-frp.tryme.cc/assets/social-preview.png">
+<script>
+  // set the language before first paint so nothing flashes
+  try {
+    var saved = localStorage.getItem('dshfrp.lang');
+    if (saved === 'zh' || saved === 'en') {
+      document.documentElement.dataset.lang = saved;
+    } else if ((navigator.language || '').toLowerCase().indexOf('zh') === 0) {
+      document.documentElement.dataset.lang = 'zh';
+    }
+  } catch (e) {}
+</script>
+<style>
+  :root {
+    --bg: #070b14;
+    --panel: rgba(255, 255, 255, .028);
+    --panel-2: rgba(255, 255, 255, .05);
+    --line: rgba(148, 163, 184, .14);
+    --line-strong: rgba(148, 163, 184, .26);
+    --text: #e8eefb;
+    --muted: #93a7c4;
+    --dim: #6f86a8;
+    --blue: #4c8dff;
+    --violet: #8b5cf6;
+    --mint: #3ee0c0;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --wrap: 1120px;
+    --r: 16px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    letter-spacing: .01em;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+      radial-gradient(900px 520px at 50% -8%, rgba(139, 92, 246, .16), transparent 70%),
+      radial-gradient(1100px 700px at 50% 108%, rgba(76, 141, 255, .14), transparent 72%);
+  }
+
+  a { color: inherit; text-decoration: none; }
+  a:hover { color: #fff; }
+
+  .wrap { width: 100%; max-width: var(--wrap); margin: 0 auto; padding: 0 24px; }
+
+  /* language switching */
+  html[data-lang="en"] .zh,
+  html[data-lang="zh"] .en { display: none !important; }
+
+  /* ---------- nav ---------- */
+  header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    backdrop-filter: blur(14px) saturate(160%);
+    -webkit-backdrop-filter: blur(14px) saturate(160%);
+    background: rgba(7, 11, 20, .72);
+    border-bottom: 1px solid var(--line);
+  }
+  .nav {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    height: 66px;
+  }
+  .brand { display: flex; align-items: center; gap: 11px; font-weight: 650; letter-spacing: -.02em; font-size: 17px; }
+  .brand svg { width: 30px; height: 30px; display: block; }
+  .nav-links { display: flex; gap: 26px; margin-left: 10px; font-size: 14.5px; color: var(--muted); }
+  .nav-links a { transition: color .18s ease; }
+  .nav-links a:hover { color: var(--text); }
+  .nav-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+  .lang {
+    display: flex;
+    align-items: center;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    overflow: hidden;
+    height: 32px;
+  }
+  .lang button {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--dim);
+    font: inherit;
+    font-size: 12.5px;
+    letter-spacing: .04em;
+    padding: 0 12px;
+    height: 100%;
+    cursor: pointer;
+    transition: background .18s ease, color .18s ease;
+  }
+  .lang button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
+  .lang button:hover { color: var(--text); }
+
+  .gh {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 34px;
+    padding: 0 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    font-size: 13.5px;
+    color: var(--text);
+    transition: border-color .18s ease, background .18s ease;
+  }
+  .gh:hover { border-color: rgba(148, 163, 184, .45); background: var(--panel); }
+  .gh svg { width: 15px; height: 15px; }
+
+  /* ---------- hero ---------- */
+  .hero { padding-top: 92px; padding-bottom: 24px; text-align: center; }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 14px 5px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 12.5px;
+    color: var(--muted);
+    background: var(--panel);
+    letter-spacing: .03em;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 10px rgba(62, 224, 192, .8); }
+
+  h1 {
+    margin: 26px auto 0;
+    max-width: 15ch;
+    font-size: clamp(38px, 6vw, 66px);
+    line-height: 1.04;
+    letter-spacing: -.035em;
+    font-weight: 700;
+  }
+  h1 .grad {
+    background: linear-gradient(105deg, #9dc0ff 0%, #4c8dff 38%, #a78bfa 78%, #d8c6ff 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .lead {
+    margin: 24px auto 0;
+    max-width: 60ch;
+    color: var(--muted);
+    font-size: clamp(16px, 1.6vw, 18.5px);
+    line-height: 1.68;
+  }
+
+  .cta-row {
+    margin-top: 34px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    justify-content: center;
+    align-items: stretch;
+  }
+
+  .cmd {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 14px 0 18px;
+    min-height: 46px;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    background: rgba(10, 16, 32, .8);
+    font-family: var(--mono);
+    font-size: 13.5px;
+    color: #cfe0ff;
+    text-align: left;
+  }
+  .cmd .prompt { color: var(--dim); user-select: none; }
+  .cmd code { min-width: 0; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+  .cmd code::-webkit-scrollbar { display: none; }
+  .copy {
+    appearance: none;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--muted);
+    font: inherit;
+    font-family: var(--sans);
+    font-size: 12px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color .18s ease, border-color .18s ease, background .18s ease;
+  }
+  .copy:hover { color: var(--text); border-color: var(--line-strong); }
+  .copy.done { color: var(--mint); border-color: rgba(62, 224, 192, .45); }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    min-height: 46px;
+    padding: 0 22px;
+    border-radius: 12px;
+    font-size: 14.5px;
+    font-weight: 600;
+    letter-spacing: .005em;
+    border: 1px solid transparent;
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease, background .18s ease;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, #4c8dff, #8b5cf6);
+    color: #fff;
+    box-shadow: 0 8px 30px -12px rgba(76, 141, 255, .9);
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 14px 38px -12px rgba(76, 141, 255, 1); color: #fff; }
+  .btn-ghost { border-color: var(--line-strong); color: var(--text); background: var(--panel); }
+  .btn-ghost:hover { border-color: rgba(148, 163, 184, .45); background: var(--panel-2); }
+
+  .facts {
+    margin-top: 26px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    justify-content: center;
+    font-size: 12.5px;
+    color: var(--dim);
+    letter-spacing: .05em;
+  }
+  .facts span { display: inline-flex; align-items: center; gap: 7px; }
+  .facts i { font-style: normal; color: var(--blue); opacity: .7; }
+
+  /* CJK needs its own rhythm: ch-based widths and negative tracking squeeze it */
+  html[data-lang="zh"] h1 { max-width: min(100%, 900px); line-height: 1.18; letter-spacing: -.012em; }
+  html[data-lang="zh"] h2 { max-width: min(100%, 730px); line-height: 1.34; letter-spacing: -.01em; }
+  html[data-lang="zh"] .lead,
+  html[data-lang="zh"] .section-lead { max-width: min(100%, 660px); }
+  html[data-lang="zh"] .step p { max-width: min(100%, 700px); }
+
+  /* ---------- hero art ---------- */
+  .art-panel {
+    margin: 56px auto 0;
+    padding: 30px 34px 22px;
+    border: 1px solid var(--line);
+    border-radius: 22px;
+    background:
+      radial-gradient(680px 320px at 50% 0%, rgba(76, 141, 255, .10), transparent 70%),
+      linear-gradient(180deg, rgba(255, 255, 255, .024), rgba(255, 255, 255, .008));
+    position: relative;
+    overflow: hidden;
+  }
+  .art-panel svg { display: block; width: 100%; height: auto; }
+  .art-legend {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    margin-top: 4px;
+    font-size: 11.5px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--dim);
+    font-family: var(--mono);
+  }
+  .art-legend .mid { color: #9eb6d8; text-align: center; }
+  .art-legend .right { text-align: right; }
+
+  .strand { animation: flow 2.8s linear infinite; }
+  .strand-b { animation-delay: -1.4s; }
+  @keyframes flow { to { stroke-dashoffset: -16; } }
+
+  .halo-pulse { animation: halo 5s ease-in-out infinite; transform-origin: 320px 150px; }
+  @keyframes halo { 0%, 100% { opacity: .75; } 50% { opacity: 1; } }
+
+  /* ---------- sections ---------- */
+  section { padding: 96px 0; }
+  section + section { border-top: 1px solid rgba(148, 163, 184, .08); }
+
+  .kicker {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--blue);
+    opacity: .95;
+  }
+  h2 {
+    margin: 14px 0 0;
+    font-size: clamp(27px, 3.4vw, 38px);
+    line-height: 1.16;
+    letter-spacing: -.028em;
+    font-weight: 680;
+    max-width: 22ch;
+  }
+  .section-lead {
+    margin: 16px 0 0;
+    max-width: 62ch;
+    color: var(--muted);
+    font-size: 16.5px;
+  }
+
+  .grid-3 {
+    margin-top: 44px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+  }
+
+  .card {
+    padding: 26px 24px 24px;
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    background: var(--panel);
+    transition: border-color .22s ease, background .22s ease, transform .22s ease;
+  }
+  .card:hover { border-color: var(--line-strong); background: var(--panel-2); transform: translateY(-2px); }
+  .card .num {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .16em;
+    color: var(--dim);
+  }
+  .card h3 { margin: 12px 0 0; font-size: 17.5px; letter-spacing: -.01em; font-weight: 640; }
+  .card p { margin: 10px 0 0; color: var(--muted); font-size: 14.5px; line-height: 1.66; }
+
+  /* ---------- flow ---------- */
+  .flow { margin-top: 44px; display: grid; gap: 2px; }
+  .step {
+    display: grid;
+    grid-template-columns: 54px 1fr;
+    gap: 20px;
+    padding: 22px 0;
+    border-top: 1px solid rgba(148, 163, 184, .10);
+    align-items: start;
+  }
+  .step:last-child { border-bottom: 1px solid rgba(148, 163, 184, .10); }
+  .step .idx {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--blue);
+    border: 1px solid rgba(76, 141, 255, .3);
+    border-radius: 8px;
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    background: rgba(76, 141, 255, .08);
+  }
+  .step h3 { margin: 3px 0 0; font-size: 16.5px; font-weight: 620; letter-spacing: -.01em; }
+  .step p { margin: 7px 0 0; color: var(--muted); font-size: 14.8px; max-width: 76ch; }
+  .step code { font-family: var(--mono); font-size: .9em; color: #bcd2f6; }
+
+  /* ---------- security ---------- */
+  .checks {
+    margin: 42px 0 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0 34px;
+  }
+  .checks li {
+    display: grid;
+    grid-template-columns: 22px 1fr;
+    gap: 12px;
+    padding: 15px 0;
+    border-top: 1px solid rgba(148, 163, 184, .09);
+    color: var(--muted);
+    font-size: 14.6px;
+    line-height: 1.6;
+  }
+  .checks li svg { width: 17px; height: 17px; margin-top: 4px; color: var(--mint); opacity: .9; }
+  .checks b { color: var(--text); font-weight: 620; }
+
+  .warn {
+    margin-top: 34px;
+    padding: 20px 22px;
+    border: 1px solid rgba(255, 176, 102, .3);
+    border-left: 3px solid rgba(255, 176, 102, .75);
+    border-radius: 12px;
+    background: rgba(255, 176, 102, .055);
+    font-size: 14.6px;
+    color: #e7d6c4;
+  }
+  .warn strong { color: #ffd2a1; font-weight: 650; }
+
+  /* ---------- limits ---------- */
+  .limits { margin-top: 38px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .limit {
+    display: grid;
+    grid-template-columns: 16px 1fr;
+    gap: 12px;
+    padding: 18px 20px;
+    border: 1px dashed rgba(148, 163, 184, .18);
+    border-radius: 12px;
+    color: var(--muted);
+    font-size: 14.4px;
+    line-height: 1.6;
+  }
+  .limit > span:first-child { color: var(--dim); font-family: var(--mono); flex: none; }
+
+  /* ---------- setup ---------- */
+  .setup-grid { margin-top: 42px; display: grid; gap: 18px; }
+  .setup-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+    gap: 26px;
+    align-items: start;
+    padding: 24px 0;
+    border-top: 1px solid rgba(148, 163, 184, .10);
+  }
+  .setup-row:last-of-type { border-bottom: 1px solid rgba(148, 163, 184, .10); }
+  .setup-row h3 { margin: 0; font-size: 16.5px; font-weight: 620; }
+  .setup-row h3 em { font-family: var(--mono); font-style: normal; color: var(--blue); font-size: 12px; letter-spacing: .14em; margin-right: 10px; }
+  .setup-row p { margin: 10px 0 0; color: var(--muted); font-size: 14.5px; }
+
+  .code {
+    position: relative;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: rgba(8, 13, 26, .85);
+    overflow: hidden;
+  }
+  .code pre {
+    margin: 0;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 12.8px;
+    line-height: 1.72;
+    color: #c6d7f2;
+    tab-size: 2;
+  }
+  .code pre { scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, .35) transparent; }
+  .code pre::-webkit-scrollbar { height: 8px; width: 8px; }
+  .code pre::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, .3); border-radius: 99px; }
+  .code pre::-webkit-scrollbar-track { background: transparent; }
+  .code .copy { position: absolute; top: 9px; right: 9px; opacity: .5; transition: opacity .18s ease, color .18s ease; }
+  .code:hover .copy, .code .copy:focus-visible { opacity: 1; }
+  .code .copy.done { opacity: 1; }
+  .cm { color: #5c718f; }
+
+  .more {
+    margin-top: 26px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .more a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13.5px;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 7px 15px;
+    transition: border-color .18s ease, color .18s ease, background .18s ease;
+  }
+  .more a:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel); }
+
+  /* ---------- footer ---------- */
+  footer {
+    padding: 44px 0 60px;
+    border-top: 1px solid rgba(148, 163, 184, .1);
+    font-size: 13.4px;
+    color: var(--dim);
+  }
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px 28px;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .foot-links { display: flex; flex-wrap: wrap; gap: 18px; }
+  .foot a { transition: color .18s ease; }
+  .foot a:hover { color: var(--text); }
+  .foot .sep { opacity: .4; }
+
+  /* ---------- reveal ---------- */
+  [data-reveal] { transition: opacity .7s cubic-bezier(.2, .7, .2, 1), transform .7s cubic-bezier(.2, .7, .2, 1); }
+  [data-reveal].pre { opacity: 0; transform: translateY(14px); }
+
+  /* ---------- responsive ---------- */
+  @media (max-width: 940px) {
+    .grid-3 { grid-template-columns: 1fr; }
+    .checks { grid-template-columns: 1fr; gap: 0; }
+    .limits { grid-template-columns: 1fr; }
+    .setup-row { grid-template-columns: 1fr; gap: 16px; }
+  }
+  @media (max-width: 780px) {
+    .nav-links { display: none; }
+    .hero { padding-top: 64px; }
+    section { padding: 72px 0; }
+    .art-panel { padding: 20px 16px 16px; border-radius: 18px; }
+    .art-legend { font-size: 8.6px; letter-spacing: .05em; }
+    .cmd { width: 100%; justify-content: space-between; font-size: 12px; }
+    .cmd code { font-size: 11.5px;
+      -webkit-mask-image: linear-gradient(90deg, #000 78%, transparent 96%);
+              mask-image: linear-gradient(90deg, #000 78%, transparent 96%); }
+    .btn { width: 100%; }
+    .step { grid-template-columns: 40px 1fr; gap: 14px; }
+    h1 { font-size: 31px; max-width: 22ch; }
+    html[data-lang="zh"] h1 { font-size: 26px; max-width: 100%; }
+    html[data-lang="zh"] h2 { font-size: 25px; }
+    .facts { font-size: 11.5px; gap: 6px 14px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .strand, .halo-pulse { animation: none; }
+    [data-reveal] { opacity: 1; transform: none; transition: none; }
+    .btn, .card { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top" aria-label="dsh-frp home">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <defs><linearGradient id="brand-g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4c8dff"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>
+        <rect x="3" y="3" width="58" height="58" rx="14" fill="url(#brand-g)" opacity=".14"/>
+        <rect x="3.75" y="3.75" width="56.5" height="56.5" rx="13.25" fill="none" stroke="url(#brand-g)" stroke-width="1.5"/>
+        <path d="M14 32h10M40 32h10" stroke="url(#brand-g)" stroke-width="3.4" stroke-linecap="round"/>
+        <path d="M30 22c6 0 6 20 12 20M34 22c6 0 6 20 12 20" fill="none" stroke="url(#brand-g)" stroke-width="2.6" stroke-linecap="round" opacity=".9"/>
+        <circle cx="20" cy="32" r="3" fill="url(#brand-g)"/>
+        <circle cx="44" cy="32" r="3" fill="url(#brand-g)"/>
+        <path d="M25 27l3 5-3 5" fill="none" stroke="url(#brand-g)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M39 27l-3 5 3 5" fill="none" stroke="url(#brand-g)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span>dsh-frp</span>
+    </a>
+
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#why"><span class="en">Why it exists</span><span class="zh">为什么需要它</span></a>
+      <a href="#how"><span class="en">How it runs</span><span class="zh">怎么跑的</span></a>
+      <a href="#security"><span class="en">Security</span><span class="zh">安全模型</span></a>
+      <a href="#setup"><span class="en">Setup</span><span class="zh">上手</span></a>
+    </nav>
+
+    <div class="nav-right">
+      <div class="lang" role="group" aria-label="Language">
+        <button type="button" data-set-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-set-lang="zh" aria-pressed="false">中文</button>
+      </div>
+      <a class="gh" href="https://github.com/trymesoft/dsh-frp" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        <span>GitHub</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+  <div class="wrap hero">
+    <span class="eyebrow"><span class="dot" aria-hidden="true"></span>
+      <span class="en">DSH bundle · MIT · zero runtime dependencies</span>
+      <span class="zh">DSH 插件 · MIT · 零运行时依赖</span>
+    </span>
+
+    <h1>
+      <span class="en">Your DSH Web GUI,<br><span class="grad">on your own domain.</span></span>
+      <span class="zh">把本机的 DSH Web GUI，<br><span class="grad">放到你自己的域名上。</span></span>
+    </h1>
+
+    <p class="lead">
+      <span class="en">dsh-frp runs an <code>frpc</code> tunnel to the frps you already own and puts a login gateway in front of it. DSH's signed cookie never reaches the browser — visitors only ever hold the gateway's own session.</span>
+      <span class="zh">dsh-frp 在你自己的 frps 上开一条 <code>frpc</code> 隧道，并在前面加一道登录网关。DSH 的签名 cookie 永远不会到浏览器，访客手里只有网关自己签发的会话。</span>
+    </p>
+
+    <div class="cta-row">
+      <div class="cmd">
+        <span class="prompt" aria-hidden="true">$</span>
+        <code>dsh plugin --profile &lt;profile&gt; add github:trymesoft/dsh-frp</code>
+        <button class="copy" type="button" data-copy="dsh plugin --profile <profile> add github:trymesoft/dsh-frp" aria-label="Copy install command"><span class="en">Copy</span><span class="zh">复制</span></button>
+      </div>
+      <a class="btn btn-primary" href="#setup"><span class="en">Set it up</span><span class="zh">开始配置</span></a>
+      <a class="btn btn-ghost" href="https://github.com/trymesoft/dsh-frp#readme" target="_blank" rel="noopener"><span class="en">Read the docs</span><span class="zh">阅读文档</span></a>
+    </div>
+
+    <div class="facts">
+      <span><i>◆</i> DSH 0.2.2-rc.5</span>
+      <span><i>◆</i> Node ≥ 20</span>
+      <span><i>◆</i> frps 0.64–0.80</span>
+      <span><i>◆</i> MIT</span>
+    </div>
+
+    <div class="art-panel" data-reveal>
+      <svg viewBox="44 48 560 169" role="img" aria-labelledby="art-title">
+        <title id="art-title">A server reaches this machine's DSH Web GUI through an frp tunnel and an authenticated gateway</title>
+        <defs>
+          <linearGradient id="tunnel" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#4c8dff"/>
+            <stop offset="1" stop-color="#8b5cf6"/>
+          </linearGradient>
+          <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#4c8dff" stop-opacity=".20"/>
+            <stop offset="1" stop-color="#8b5cf6" stop-opacity=".10"/>
+          </linearGradient>
+          <radialGradient id="halo" cx=".5" cy=".5" r=".5">
+            <stop offset="0" stop-color="#4c8dff" stop-opacity=".18"/>
+            <stop offset="1" stop-color="#4c8dff" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+
+        <g class="halo-pulse"><circle cx="320" cy="150" r="70" fill="url(#halo)"/></g>
+
+        <g stroke="#8b9ab3" stroke-width="2.4" fill="none" stroke-linecap="round">
+          <rect x="56" y="94" width="72" height="30" rx="7"/>
+          <rect x="56" y="135" width="72" height="30" rx="7"/>
+          <rect x="56" y="176" width="72" height="30" rx="7"/>
+          <path d="M68 109h10M68 150h10M68 191h10" stroke-opacity=".55"/>
+          <circle cx="112" cy="109" r="2.6" fill="#8b9ab3" stroke="none" fill-opacity=".75"/>
+          <circle cx="112" cy="150" r="2.6" fill="#8b9ab3" stroke="none" fill-opacity=".75"/>
+          <circle cx="112" cy="191" r="2.6" fill="#4c8dff" stroke="none"/>
+        </g>
+
+        <g fill="none" stroke="url(#tunnel)" stroke-width="2.6" stroke-linecap="round">
+          <path class="strand" d="M134 143c64-26 84-26 148 0" stroke-dasharray="7 9" stroke-opacity=".6"/>
+          <path class="strand strand-b" d="M506 157c-64 26-84 26-148 0" stroke-dasharray="7 9" stroke-opacity=".6"/>
+        </g>
+        <g fill="url(#tunnel)">
+          <circle cx="172" cy="137" r="3.2" fill-opacity=".85"/>
+          <circle cx="233" cy="128" r="2.4" fill-opacity=".55"/>
+          <circle cx="407" cy="172" r="3.2" fill-opacity=".85"/>
+          <circle cx="468" cy="163" r="2.4" fill-opacity=".55"/>
+        </g>
+
+        <g>
+          <circle cx="320" cy="150" r="42" fill="#4c8dff" fill-opacity=".10"/>
+          <circle cx="320" cy="150" r="42" fill="none" stroke="#4c8dff" stroke-width="2" stroke-opacity=".55"/>
+          <path d="M320 118l24 9v20c0 17-10 30-24 37-14-7-24-20-24-37v-20z" fill="url(#screen)" stroke="url(#tunnel)" stroke-width="3" stroke-linejoin="round"/>
+          <path d="M310 150l7 7 14-14" fill="none" stroke="#3ee0c0" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </g>
+
+        <g>
+          <rect x="498" y="104" width="94" height="62" rx="9" fill="url(#screen)" stroke="#4c8dff" stroke-width="2.6"/>
+          <path d="M520 166l-5 16h50l-5-16" fill="none" stroke="#4c8dff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M510 118h30M510 128h44M510 138h22" stroke="#4c8dff" stroke-width="2.4" stroke-linecap="round" stroke-opacity=".6"/>
+          <rect x="554" y="116" width="26" height="18" rx="4" fill="none" stroke="#4c8dff" stroke-width="2" stroke-opacity=".55"/>
+        </g>
+
+        <g fill="none" stroke="#8b9ab3" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" stroke-opacity=".85">
+          <circle cx="320" cy="66" r="7"/>
+          <path d="M306 92c2-8 7-12 14-12s12 4 14 12"/>
+        </g>
+      </svg>
+      <div class="art-legend" aria-hidden="true">
+        <span><span class="en">your frps</span><span class="zh">你的 frps</span></span>
+        <span class="mid"><span class="en">login gateway</span><span class="zh">登录网关</span></span>
+        <span class="right"><span class="en">this machine's GUI</span><span class="zh">这台机器的 GUI</span></span>
+      </div>
+    </div>
+  </div>
+
+  <section id="why">
+    <div class="wrap">
+      <div class="kicker"><span class="en">The problem</span><span class="zh">问题所在</span></div>
+      <h2>
+        <span class="en">A tunnel alone is not an entrance.</span>
+        <span class="zh">光有隧道，算不上一个入口。</span>
+      </h2>
+      <p class="section-lead">
+        <span class="en">Point a bare <code>frpc</code> at the DSH Web GUI and three things break, in order.</span>
+        <span class="zh">把一个裸 <code>frpc</code> 直接对着 DSH Web GUI，会依次断在三件事上。</span>
+      </p>
+
+      <div class="grid-3">
+        <article class="card" data-reveal>
+          <div class="num">01</div>
+          <h3><span class="en">DSH refuses the request</span><span class="zh">DSH 会拒掉这个请求</span></h3>
+          <p>
+            <span class="en">The GUI keeps its own fence: a loopback host and a matching origin. A plain tunnel rewrites <code>Host</code>, so the page 404s — and if you bend it until DSH accepts, everything downstream inherits the bend.</span>
+            <span class="zh">GUI 有一道自己的围栏：只认 loopback 的 <code>Host</code> 和同源 <code>Origin</code>。裸隧道会把 <code>Host</code> 改写掉，于是 404；就算你把它掰到 DSH 能接受，下游也全都继承了这个弯。</span>
+          </p>
+        </article>
+
+        <article class="card" data-reveal>
+          <div class="num">02</div>
+          <h3><span class="en">The cookie is the machine</span><span class="zh">cookie 就是这台机器</span></h3>
+          <p>
+            <span class="en">DSH hands the browser a long-lived signed cookie. Publish that cookie to the internet and you have published full control of this machine's agent — including the panel that manages the tunnel.</span>
+            <span class="zh">DSH 发给浏览器的是一枚长期签名 cookie。把它放到公网上，等于把这台机器上 agent 的完整控制权放上去，包括管理隧道的那块面板本身。</span>
+          </p>
+        </article>
+
+        <article class="card" data-reveal>
+          <div class="num">03</div>
+          <h3><span class="en">Access has to be revocable</span><span class="zh">权限必须能撤销</span></h3>
+          <p>
+            <span class="en">The gateway signs its own sessions. Changing the public password bumps an epoch in the credential store, and every signed-in device is out on its next request. Kill the gateway and <code>frpc</code> dies with it.</span>
+            <span class="zh">网关自己签发会话。改一次密码就抬高 credential store 里的 epoch，所有已登录设备在下一个请求就失效。网关被杀掉，<code>frpc</code> 跟着一起死。</span>
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <div class="kicker"><span class="en">Under the hood</span><span class="zh">实际跑起来</span></div>
+      <h2>
+        <span class="en">Four moves, one of them invisible.</span>
+        <span class="zh">四步，其中一步你看不见。</span>
+      </h2>
+
+      <div class="flow">
+        <div class="step" data-reveal>
+          <div class="idx">1</div>
+          <div>
+            <h3><span class="en">A loopback gateway starts</span><span class="zh">先起来一个 loopback 网关</span></h3>
+            <p>
+              <span class="en">On an OS-assigned port, bound to <code>127.0.0.1</code>. It exchanges DSH's launch token for a signed cookie and keeps that cookie in Host process memory — never in a file, never in a header to the browser.</span>
+              <span class="zh">端口由系统分配，只绑 <code>127.0.0.1</code>。它用 DSH 的 launch token 换一枚签名 cookie，这枚 cookie 只放在 Host 进程内存里 —— 不落盘，也不进浏览器的任何头。</span>
+            </p>
+          </div>
+        </div>
+
+        <div class="step" data-reveal>
+          <div class="idx">2</div>
+          <div>
+            <h3><span class="en">The plugin writes frpc.toml and supervises frpc</span><span class="zh">插件生成 frpc.toml 并看护 frpc</span></h3>
+            <p>
+              <span class="en">Random proxy name per start, random admin credentials on loopback, mode <code>0600</code>. Proxy state comes from frpc's admin API, not from parsing stdout. Restarts back off instead of hammering.</span>
+              <span class="zh">每次启动用随机代理名，admin API 用随机凭据、只听 loopback，文件权限 <code>0600</code>。代理状态从 frpc 的 admin API 读，不靠解析 stdout。重启是退避的，不会疯狂重试。</span>
+            </p>
+          </div>
+        </div>
+
+        <div class="step" data-reveal>
+          <div class="idx">3</div>
+          <div>
+            <h3><span class="en">A visitor arrives</span><span class="zh">访客进来</span></h3>
+            <p>
+              <span class="en">nginx → frps → frpc → gateway. The gateway asks for its own login first, then normalizes <code>Host</code>, <code>Cookie</code> and <code>Origin</code> into the shape the DSH fence accepts. WebSocket upgrades go through the same check.</span>
+              <span class="zh">nginx → frps → frpc → 网关。网关先要它自己的登录，然后把 <code>Host</code>、<code>Cookie</code>、<code>Origin</code> 规整成 DSH 围栏接受的样子。WebSocket 升级走同一道检查。</span>
+            </p>
+          </div>
+        </div>
+
+        <div class="step" data-reveal>
+          <div class="idx">4</div>
+          <div>
+            <h3><span class="en">The way back is scrubbed</span><span class="zh">回程要擦干净</span></h3>
+            <p>
+              <span class="en"><code>Set-Cookie</code> is stripped, <code>Location</code> is rewritten to the public origin, hop-by-hop headers are dropped. If the gateway errors or stops, frpc is killed at once — a live tunnel must never outlive its authentication layer.</span>
+              <span class="zh"><code>Set-Cookie</code> 一律剥掉，<code>Location</code> 改写成公网 origin，逐跳头丢弃。网关一出错或停止就立刻杀掉 frpc —— 一条活着的隧道不能活得比它的认证层更久。</span>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="security">
+    <div class="wrap">
+      <div class="kicker"><span class="en">Security</span><span class="zh">安全模型</span></div>
+      <h2>
+        <span class="en">What the gateway buys you.</span>
+        <span class="zh">这道网关具体买到了什么。</span>
+      </h2>
+      <p class="section-lead">
+        <span class="en">Concrete behaviours, not adjectives. Each one is enforced in code and covered by the test suite.</span>
+        <span class="zh">具体行为，不是形容词。每一条都在代码里强制，并有测试覆盖。</span>
+      </p>
+
+      <ul class="checks">
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><span class="en"><b>One door.</b> Every request and WebSocket upgrade needs a gateway session; unknown <code>Host</code> headers get 404 before authentication, so the loopback port is not a second entrance.</span>
+          <span class="zh"><b>只有一个门。</b>每个请求和 WebSocket 升级都要过网关会话；未知 <code>Host</code> 在认证之前就 404，loopback 端口不是第二个入口。</span></span>
+        </li>
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><span class="en"><b>No cookie leakage.</b> <code>Set-Cookie</code> and <code>Set-Cookie2</code> are stripped from every proxied response. The browser never sees a DSH cookie.</span>
+          <span class="zh"><b>cookie 不外泄。</b>所有被代理的响应都剥掉 <code>Set-Cookie</code> 和 <code>Set-Cookie2</code>，浏览器永远看不到 DSH 的 cookie。</span></span>
+        </li>
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><span class="en"><b>Sessions you can burn.</b> HMAC over <code>{exp, epoch}</code>; <code>HttpOnly</code>, <code>SameSite=Strict</code>, host-only, and <code>Secure</code> + <code>__Host-</code> when the entrance is HTTPS.</span>
+          <span class="zh"><b>会话可以一次性烧掉。</b>对 <code>{exp, epoch}</code> 做 HMAC；<code>HttpOnly</code>、<code>SameSite=Strict</code>、host-only，HTTPS 下带 <code>Secure</code> 和 <code>__Host-</code> 前缀。</span></span>
+        </li>
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><span class="en"><b>Login throttling that works here.</b> Constant-time comparison plus a global 1s→30s failure delay. Deliberately not per-IP: in this topology the gateway's TCP peer is always <code>127.0.0.1</code>.</span>
+          <span class="zh"><b>适合这个拓扑的登录限速。</b>常量时间比较，加一个 1s→30s 的全局失败延迟。故意不做按 IP：这个拓扑上网关的 TCP 对端永远是 <code>127.0.0.1</code>。</span></span>
+        </li>
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><span class="en"><b>Verified binaries.</b> The managed download checks the archive against SHA-256 pinned in the source. A version without a pinned hash needs an explicit consent prompt.</span>
+          <span class="zh"><b>二进制经过校验。</b>托管下载会按源码里钉死的 SHA-256 校验压缩包；没有钉死哈希的版本必须显式确认才能下载。</span></span>
+        </li>
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><span class="en"><b>Header hygiene.</b> Hop-by-hop headers dropped; a message carrying both <code>Transfer-Encoding</code> and <code>Content-Length</code> is rejected; the visitor IP comes from the trusted XFF chain.</span>
+          <span class="zh"><b>头部卫生。</b>丢弃逐跳头；同时带 <code>Transfer-Encoding</code> 和 <code>Content-Length</code> 的消息直接拒绝；访客 IP 从可信的 XFF 链里取。</span></span>
+        </li>
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><span class="en"><b>Nothing sideways.</b> No agent tools registered, no telemetry, no session data touched. Peers: your frps, the local GUI, and — only when you ask for a download — the frp release URL.</span>
+          <span class="zh"><b>不横着长。</b>不注册 agent 工具、不做遥测、不碰会话数据。对端只有：你的 frps、本地 GUI，以及你主动点下载时的 frp 发布地址。</span></span>
+        </li>
+        <li data-reveal>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>
+          <span><span class="en"><b>Secrets stay out of config.</b> The frps token, the public password, the signing secret and the epoch live in the DSH credential store — never in <code>cordis.patch.yml</code> or the status payload.</span>
+          <span class="zh"><b>密钥不进配置文件。</b>frps token、公网密码、签名密钥和 epoch 都存在 DSH 的 credential store —— 不进 <code>cordis.patch.yml</code>，也不进状态响应。</span></span>
+        </li>
+      </ul>
+
+      <div class="warn" data-reveal>
+        <span class="en"><strong>A working tunnel is remote control.</strong> The public entrance has the same authority as the DSH agent on this machine — including this plugin's panel, which can start, stop and reconfigure the tunnel. Treat the password like an SSH key, and remember this is a <strong>single-user view</strong>: no per-user isolation.</span>
+        <span class="zh"><strong>一条能用的隧道就是远程控制。</strong>公网入口的权限等于这台机器上的 DSH agent —— 也包括这个插件的面板，它能启停和重配隧道。请把密码当 SSH 私钥对待，同时记住这是<strong>单用户视图</strong>，没有按用户的隔离。</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="limits">
+    <div class="wrap">
+      <div class="kicker"><span class="en">Honest edges</span><span class="zh">边界说清楚</span></div>
+      <h2>
+        <span class="en">Where it stops.</span>
+        <span class="zh">它不管的那部分。</span>
+      </h2>
+      <p class="section-lead">
+        <span class="en">If one of these is a requirement, this is the wrong tool — better to know now.</span>
+        <span class="zh">下面哪条是你的硬需求，那就是选错了工具 —— 现在知道比装完再知道好。</span>
+      </p>
+
+      <div class="limits">
+        <div class="limit" data-reveal><span>—</span><span><span class="en">No TLS termination. The gateway speaks plain HTTP on loopback; HTTPS is your nginx's job, and the plugin cannot verify that it happened.</span><span class="zh">不做 TLS 终止。网关在 loopback 上说纯 HTTP；HTTPS 是你 nginx 的事，插件也无法验证它真的做了。</span></span></div>
+        <div class="limit" data-reveal><span>—</span><span><span class="en">One target: this DSH GUI. No multi-proxy, multi-domain, or per-device management.</span><span class="zh">只有一个目标：这台 DSH GUI。不做多代理、多域名、按设备管理。</span></span></div>
+        <div class="limit" data-reveal><span>—</span><span><span class="en">No multi-user accounts, no per-user DSH sessions, no audit log, no MFA.</span><span class="zh">没有多账号、没有按用户的 DSH 会话、没有审计日志，也没有 MFA。</span></span></div>
+        <div class="limit" data-reveal><span>—</span><span><span class="en">Automatic binary download handles <code>tar.gz</code> only; Windows users bring their own <code>frpc.exe</code>.</span><span class="zh">自动下载只处理 <code>tar.gz</code>；Windows 用户自己放一个 <code>frpc.exe</code>。</span></span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="setup">
+    <div class="wrap">
+      <div class="kicker"><span class="en">Setup</span><span class="zh">上手</span></div>
+      <h2>
+        <span class="en">Up in three moves.</span>
+        <span class="zh">三步就能跑起来。</span>
+      </h2>
+
+      <div class="setup-grid">
+        <div class="setup-row" data-reveal>
+          <div>
+            <h3><em>01</em><span class="en">Turn on token auth in frps</span><span class="zh">在 frps 上打开 token 认证</span></h3>
+            <p>
+              <span class="en">The plugin routes by <code>customDomains</code>, so <code>subdomainHost</code> is unnecessary. Keep <code>vhostHTTPPort</code> reachable only from nginx.</span>
+              <span class="zh">插件按 <code>customDomains</code> 路由，所以不用配 <code>subdomainHost</code>。<code>vhostHTTPPort</code> 只对 nginx 和本机开放。</span>
+            </p>
+          </div>
+          <div class="code">
+            <button class="copy" type="button" data-copy="bindPort = 17000&#10;vhostHTTPPort = 17002&#10;&#10;auth.method = &quot;token&quot;&#10;auth.token = &quot;<a long random token>&quot;"><span class="en">Copy</span><span class="zh">复制</span></button>
+            <pre><code>bindPort = 17000
+vhostHTTPPort = 17002
+
+auth.method = "token"
+auth.token = "&lt;a long random token&gt;"</code></pre>
+          </div>
+        </div>
+
+        <div class="setup-row" data-reveal>
+          <div>
+            <h3><em>02</em><span class="en">Put TLS in front of the vhost port</span><span class="zh">在 vhost 端口前面做 TLS</span></h3>
+            <p>
+              <span class="en">The defaults 404 and drop WebSockets: without an explicit <code>Host</code>, nginx rewrites it to <code>$proxy_host</code>, and frps routes by <code>Host</code>.</span>
+              <span class="zh">默认配置会 404 且丢 WebSocket：不显式设 <code>Host</code>，nginx 会把它改写成 <code>$proxy_host</code>，而 frps 正是按 <code>Host</code> 路由的。</span>
+            </p>
+          </div>
+          <div class="code">
+            <button class="copy" type="button" data-copy="location / {&#10;  proxy_pass http://127.0.0.1:17002;&#10;  proxy_http_version 1.1;&#10;  proxy_set_header Host $host;&#10;  proxy_set_header Upgrade $http_upgrade;&#10;  proxy_set_header Connection $connection_upgrade;&#10;  proxy_read_timeout 3600s;&#10;}"><span class="en">Copy</span><span class="zh">复制</span></button>
+            <pre><code>location / {
+  proxy_pass http://127.0.0.1:17002;
+  proxy_http_version 1.1;
+  <span class="cm"># required: frps routes by Host</span>
+  proxy_set_header Host $host;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection $connection_upgrade;
+  <span class="cm"># keep idle WebSockets alive</span>
+  proxy_read_timeout 3600s;
+}</code></pre>
+          </div>
+        </div>
+
+        <div class="setup-row" data-reveal>
+          <div>
+            <h3><em>03</em><span class="en">Fill the panel and start the tunnel</span><span class="zh">在面板里填好并启动隧道</span></h3>
+            <p>
+              <span class="en">Open <b>Plugins → frp tunnel</b>: server, port, domain, public URL, then the auth token. Get a binary — download it (SHA-256 checked) or point at your own. Set a 12+ character password and press <b>Start tunnel</b>. Failures name their cause instead of sitting on “Starting”.</span>
+              <span class="zh">打开 <b>插件 → frp tunnel</b>：填服务器、端口、域名、公网地址，再保存 auth token。取一个二进制 —— 自动下载（已校验 SHA-256）或指向你自己的。设一个 12 位以上的密码，点 <b>启动隧道</b>。失败会直接说原因，不会卡在“正在启动”。</span>
+            </p>
+          </div>
+          <div class="code">
+            <button class="copy" type="button" data-copy="dsh plugin --profile <profile> add github:trymesoft/dsh-frp"><span class="en">Copy</span><span class="zh">复制</span></button>
+            <pre><code><span class="cm"># install into an existing DSH profile</span>
+dsh plugin --profile &lt;profile&gt; add github:trymesoft/dsh-frp</code></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="more">
+        <a href="https://github.com/trymesoft/dsh-frp#readme" target="_blank" rel="noopener"><span class="en">Full configuration reference ↗</span><span class="zh">完整配置表 ↗</span></a>
+        <a href="https://github.com/trymesoft/dsh-frp/blob/main/docs/architecture.md" target="_blank" rel="noopener"><span class="en">Architecture ↗</span><span class="zh">架构文档 ↗</span></a>
+        <a href="https://github.com/trymesoft/dsh-frp/blob/main/docs/DETAIL.md" target="_blank" rel="noopener"><span class="en">End-user guide ↗</span><span class="zh">使用指南 ↗</span></a>
+        <a href="https://github.com/trymesoft/dsh-frp/blob/main/README.zh-CN.md" target="_blank" rel="noopener"><span class="en">中文说明 ↗</span><span class="zh">中文说明 ↗</span></a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div>
+      <span>MIT © 2026 trymesoft</span>
+      <span class="sep"> · </span>
+      <span class="en">Not affiliated with DeepSeek or fatedier/frp — this bundle only launches frp's client.</span>
+      <span class="zh">与 DeepSeek 及 fatedier/frp 无关联 —— 本插件只负责启动 frp 的客户端。</span>
+    </div>
+    <div class="foot-links">
+      <a href="https://github.com/trymesoft/dsh-frp" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/trymesoft/dsh-frp#readme" target="_blank" rel="noopener">README</a>
+      <a href="https://github.com/fatedier/frp" target="_blank" rel="noopener">frp</a>
+      <a href="#top"><span class="en">Back to top</span><span class="zh">回到顶部</span></a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  (function () {
+    var root = document.documentElement;
+
+    function paintLang(lang) {
+      root.dataset.lang = lang;
+      root.setAttribute('lang', lang === 'zh' ? 'zh-CN' : 'en');
+      document.querySelectorAll('[data-set-lang]').forEach(function (b) {
+        b.setAttribute('aria-pressed', String(b.dataset.setLang === lang));
+      });
+    }
+
+    var initial = root.dataset.lang === 'zh' ? 'zh' : 'en';
+    paintLang(initial);
+
+    document.querySelectorAll('[data-set-lang]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var lang = btn.dataset.setLang;
+        paintLang(lang);
+        try { localStorage.setItem('dshfrp.lang', lang); } catch (e) {}
+      });
+    });
+
+    // copy buttons
+    document.querySelectorAll('.copy').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var text = btn.dataset.copy || '';
+        var done = function () {
+          var en = btn.querySelector('.en'), zh = btn.querySelector('.zh');
+          var prevEn = en ? en.textContent : '', prevZh = zh ? zh.textContent : '';
+          btn.classList.add('done');
+          if (en) en.textContent = 'Copied';
+          if (zh) zh.textContent = '已复制';
+          setTimeout(function () {
+            btn.classList.remove('done');
+            if (en) en.textContent = prevEn;
+            if (zh) zh.textContent = prevZh;
+          }, 1600);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () {});
+        } else {
+          var ta = document.createElement('textarea');
+          ta.value = text;
+          ta.setAttribute('readonly', '');
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); done(); } catch (e) {}
+          document.body.removeChild(ta);
+        }
+      });
+    });
+
+    // scroll reveal
+    var targets = document.querySelectorAll('[data-reveal]');
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if ('IntersectionObserver' in window && !reduce) {
+      // hide only when we can definitely reveal again, so a broken script or a
+      // crawler never sees a blank section
+      targets.forEach(function (el) { el.classList.add('pre'); });
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            entry.target.classList.remove('pre');
+            io.unobserve(entry.target);
+          }
+        });
+      }, { rootMargin: '0px 0px -8% 0px', threshold: 0.12 });
+      targets.forEach(function (el) { io.observe(el); });
+    }
+  })();
+</script>
+</body>
+</html>
