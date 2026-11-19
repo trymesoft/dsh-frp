@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { constantTimeEqual, SessionAuthority, LoginThrottle } from '../gateway-session.js';
+import { constantTimeEqual, SessionAuthority, LoginThrottle } from '../src/gateway-session.js';
 
 const SECRET = 'signing-secret-for-tests';
 const HOUR = 3600 * 1000;
@@ -39,7 +39,7 @@ test('a freshly issued cookie verifies inside its lifetime and epoch', () => {
   assert.equal(authority.verify(cookie, now + 11 * HOUR), true);
 });
 
-test('Review Focus 4: a live epoch bump invalidates the same instance old cookie', () => {
+test('a live epoch bump invalidates the same instance old cookie', () => {
   const { authority, bumpEpoch } = makeAuthority();
   const now = 1_700_000_000_000;
   const cookie = authority.issue(now);
@@ -65,7 +65,7 @@ test('expired cookies and tampered payloads are rejected', () => {
 test('a cookie signed with another secret is rejected', () => {
   const { authority } = makeAuthority();
   const foreign = new SessionAuthority({
-    signingSecret: '{{SECRET_3dkmeadw}}',
+    signingSecret: 'foreign signing secret',
     epoch: () => 1,
     ttlHours: 12,
     secure: false,

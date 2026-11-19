@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 
-import { Config, apply } from '../index.js';
+import { Config, apply } from '../src/index.js';
 
 function makeCtx() {
   const registered = [];
@@ -229,4 +229,9 @@ test('secrets go into credential records as grant payloads when the service is p
       globalThis.fetch = realFetch;
     }
   });
+});
+
+test('Config normalizes the public entrance to its origin', () => {
+  const out = Config['~standard'].validate({ publicBaseUrl: 'HTTPS://Dsh.Example.com/' });
+  assert.equal(out.value.publicBaseUrl, 'https://dsh.example.com');
 });

@@ -239,16 +239,19 @@ function adminGet({ port, user, password }, urlPath, timeoutMs = 2000) {
  * @param {() => number} opts.gatewayPort
  * @param {(creds: {user: string, password: string}) => Promise<void>} opts.persistAdminCreds
  * @param {number} [opts.adminPollMs]
+ * @param {number} [opts.startTimeoutMs] how long a proxy may stay unregistered before it is reported
  * @param {{initialMs: number, maxMs: number, maxConsecutiveFails: number}} [opts.backoff]
  */
 export function createFrpcManager(opts) {
   const pollMs = opts.adminPollMs ?? 1500;
+  const startTimeoutMs = opts.startTimeoutMs ?? 30_000;
   const backoff = { initialMs: 1000, maxMs: 60_000, maxConsecutiveFails: 5, ...(opts.backoff ?? {}) };
 
   const lines = [];
   const listeners = new Set();
   let state = 'stopped';
   let message;
+  let stateReason;
   let proxyState;
   let handle = null;
   let admin = null;
@@ -259,12 +262,15 @@ export function createFrpcManager(opts) {
   let restartAttempt = 0;
   let startedAt = 0;
   let stoppedManually = true;
+  let timeoutReported = false;
   // Every launch gets a generation; exits from an older one are ignored so a
   // stop→start race cannot let a dead child clear the live child's state.
   let generation = 0;
 
   function status() {
-    return { state, message, proxyState };
+    // `reason` is the machine-readable twin of `message`: the panel localizes
+    // `{code, params}` and keeps `message` only as the diagnostic fallback.
+    return { state, message, proxyState, reason: stateReason };
   }
 
   function emit() {
@@ -278,9 +284,10 @@ export function createFrpcManager(opts) {
     }
   }
 
-  function setState(next, nextMessage) {
+  function setState(next, nextMessage, reason) {
     state = next;
     message = nextMessage;
+    stateReason = reason;
     emit();
   }
 
@@ -318,32 +325,121 @@ export function createFrpcManager(opts) {
     restartTimer = null;
   }
 
+  /**
+   * Find this tunnel's proxy in an frpc admin `/api/status` answer.
+   *
+   * frpc answers with one array per proxy type — `{http:[...], tcp:[...]}` —
+   * while older builds and the test stub use `{proxies:[...]}`. Reading only
+   * `proxies` leaves the panel in `starting` forever even though frpc is
+   * serving traffic, which is exactly what "启动中" never clearing looked like.
+   */
+  function findProxy(payload, name) {
+    if (!payload || typeof payload !== 'object') return undefined;
+    const groups = [];
+    if (Array.isArray(payload.proxies)) groups.push(payload.proxies);
+    for (const value of Object.values(payload)) if (Array.isArray(value)) groups.push(value);
+    for (const group of groups) {
+      const hit = group.find((entry) => entry && typeof entry === 'object' && entry.name === name);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+
+  /** A proxy status that is a failure rather than a stage: frps said no. */
+  function proxyFailureOf(proxy) {
+    const text = String(proxy?.status ?? '').trim();
+    const lowered = text.toLowerCase();
+    if (!lowered.includes('error') && !lowered.includes('fail')) return undefined;
+    const detail = String(proxy?.err ?? '').trim();
+    return { status: text, detail: detail || undefined };
+  }
+
   async function pollOnce() {
-    if (!admin || state === 'stopped' || state === 'error') return;
+    // A child outlives a proxy failure so polling can still report a recovery;
+    // with no child there is nothing to poll (stopped, or crashed out).
+    if (!admin || !handle) return;
     try {
       const health = await adminGet(admin, '/healthz');
       if (health.status !== 200) throw new Error('healthz ' + health.status);
       const statusRes = await adminGet(admin, '/api/status');
       if (statusRes.status !== 200) throw new Error('status ' + statusRes.status);
       const parsed = JSON.parse(statusRes.body);
-      const proxy = (parsed.proxies ?? []).find((entry) => entry.name === currentName);
+      const proxy = findProxy(parsed, currentName);
       proxyState = proxy?.status;
+
+      const failure = proxyFailureOf(proxy);
+      if (failure) {
+        // frps refused the proxy (bad token, taken domain, port conflict). The
+        // child keeps retrying on its own, so a later poll may still recover.
+        const detail = failure.detail ? ' (' + failure.detail + ')' : '';
+        setState('error', 'frps rejected the proxy: ' + failure.status + detail, {
+          code: 'proxy-error',
+          params: { status: failure.status, detail: failure.detail },
+        });
+        return;
+      }
+
       if (proxy?.status === 'running') {
         consecutiveFails = 0;
         restartAttempt = 0;
-        if (state !== 'running') setState('running');
-      } else if (state === 'starting') {
+        if (state !== 'running') {
+          timeoutReported = false;
+          setState('running');
+        }
+        return;
+      }
+
+      if (state === 'running') {
+        // The proxy dropped after it had been up; it is not "running" any more.
+        setState('starting', 'the proxy stopped running; waiting for frpc to re-register it', {
+          code: 'proxy-closed',
+          params: { status: String(proxy?.status ?? 'unknown') },
+        });
+        // A fresh grace window: a reconnect is not a start that timed out.
+        startedAt = Date.now();
+        timeoutReported = false;
+        return;
+      }
+
+      if (!timeoutReported && Date.now() - startedAt > startTimeoutMs) {
+        timeoutReported = true;
+        const seconds = Math.max(1, Math.round(startTimeoutMs / 1000));
+        setState('error', 'frpc is running but its proxy did not come up within ' + seconds + 's', {
+          code: 'start-timeout',
+          params: { seconds, status: String(proxy?.status ?? 'unknown') },
+        });
+        return;
+      }
+
+      if (state === 'starting') {
         message = 'frpc is up, waiting for the proxy to register';
+        stateReason = { code: 'waiting-proxy', params: { status: String(proxy?.status ?? 'unknown') } };
       }
     } catch {
-      if (state === 'running') {
+      proxyState = undefined;
+      // The admin API can stay unreachable for the whole start window (the
+      // process is alive but not answering, or its port is wrong). Without a
+      // timeout here the panel would sit on "starting" forever, so the same
+      // deadline applies on the failure path as on the success path.
+      if (!timeoutReported && Date.now() - startedAt > startTimeoutMs) {
+        timeoutReported = true;
+        const seconds = Math.max(1, Math.round(startTimeoutMs / 1000));
+        setState('error', 'frpc is running but its admin API did not answer within ' + seconds + 's', {
+          code: 'start-timeout',
+          params: { seconds, status: 'unknown' },
+        });
+      } else if (state === 'starting') {
+        // Same state, better reason: do not emit a transition the panel would
+        // read as a new start.
+        message = 'frpc admin API is not answering';
+        stateReason = { code: 'admin-unreachable' };
+      } else if (state === 'running') {
         // The process may still be alive while its admin API is unreachable;
         // fall back to starting until polling says otherwise.
-        proxyState = undefined;
-        setState('starting', 'frpc admin API is not answering');
+        setState('starting', 'frpc admin API is not answering', { code: 'admin-unreachable' });
       }
     } finally {
-      if (state !== 'stopped' && state !== 'error') {
+      if (admin && handle) {
         pollTimer = setTimeout(() => {
           void pollOnce();
         }, pollMs);
@@ -362,13 +458,19 @@ export function createFrpcManager(opts) {
     proxyState = undefined;
 
     if (consecutiveFails >= backoff.maxConsecutiveFails) {
-      setState('error', 'frpc failed ' + consecutiveFails + ' times in a row (last exit code ' + String(exitCode) + ')');
+      setState('error', 'frpc failed ' + consecutiveFails + ' times in a row (last exit code ' + String(exitCode) + ')', {
+        code: 'crash-loop',
+        params: { count: consecutiveFails, exitCode: String(exitCode) },
+      });
       return;
     }
 
     const delay = Math.min(backoff.initialMs * 2 ** restartAttempt, backoff.maxMs);
     restartAttempt += 1;
-    setState('starting', 'frpc exited (' + String(exitCode) + '), restarting in ' + delay + 'ms');
+    setState('starting', 'frpc exited (' + String(exitCode) + '), restarting in ' + delay + 'ms', {
+      code: 'frpc-exited',
+      params: { exitCode: String(exitCode), delayMs: delay },
+    });
     restartTimer = setTimeout(() => {
       restartTimer = null;
       if (stoppedManually) return;
@@ -376,7 +478,8 @@ export function createFrpcManager(opts) {
       // land in the error state: Node treats an unhandled rejection as fatal,
       // and taking the Host down is not a failure mode this plugin may have.
       launch().catch((error) => {
-        setState('error', String(error?.message ?? error));
+        const detail = String(error?.message ?? error);
+        setState('error', detail, { code: 'launch-failed', params: { detail } });
       });
     }, delay);
   }
@@ -385,16 +488,17 @@ export function createFrpcManager(opts) {
     if (handle) return; // one child at a time: never orphan a supervised process
     const binary = opts.binaryPath();
     if (!binary) {
-      setState('error', 'frpc binary is not available');
+      setState('error', 'frpc binary is not available', { code: 'binary-missing' });
       return;
     }
     const myGeneration = (generation += 1);
+    timeoutReported = false;
     setState('starting');
     const adminPort = await allocatePort();
     const adminUser = 'dshfrp' + randomHex(4);
     const adminPassword = randomBytes(18).toString('base64url');
     await opts.persistAdminCreds({ user: adminUser, password: adminPassword });
-    currentName = 'dsh-frp-' + randomProxyNameSuffix();
+    currentName = 'dshfrp-' + randomProxyNameSuffix();
 
     const config = opts.config();
     const toml = renderFrpcToml({
@@ -437,29 +541,14 @@ export function createFrpcManager(opts) {
 
   let starting = null;
 
-  async function start() {
-    if (starting) return starting;
-    if (handle) return;
-    if (restartTimer) {
-      clearTimeout(restartTimer);
-      restartTimer = null;
-    }
-    stoppedManually = false;
-    consecutiveFails = 0;
-    restartAttempt = 0;
-    starting = (async () => {
-      try {
-        await launch();
-      } finally {
-        starting = null;
-      }
-    })();
-    return starting;
-  }
-
-  async function stop() {
-    stoppedManually = true;
-    generation += 1; // invalidate any in-flight exit handler
+  /**
+   * Drop the live child without touching the reported state.
+   *
+   * The generation bump makes the child's exit handler a no-op, so a discarded
+   * process can never schedule a restart or clear the state of its successor.
+   */
+  async function discardChild() {
+    generation += 1;
     stopTimers();
     const current = handle;
     handle = null;
@@ -472,6 +561,34 @@ export function createFrpcManager(opts) {
         /* the process is already gone */
       }
     }
+  }
+
+  async function start() {
+    if (starting) return starting;
+    // An error state is retryable: the panel's Start button is the user's way
+    // back from a failed attempt, so it must replace that child, not ignore it.
+    if (handle && state !== 'error') return;
+    if (restartTimer) {
+      clearTimeout(restartTimer);
+      restartTimer = null;
+    }
+    stoppedManually = false;
+    consecutiveFails = 0;
+    restartAttempt = 0;
+    starting = (async () => {
+      try {
+        if (handle) await discardChild();
+        await launch();
+      } finally {
+        starting = null;
+      }
+    })();
+    return starting;
+  }
+
+  async function stop() {
+    stoppedManually = true;
+    await discardChild();
     setState('stopped');
   }
 

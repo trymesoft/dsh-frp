@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "frp tunnel",
-    "description": "Expose this DSH through your own frps server behind an authenticated gateway"
+    "description": "Expose this DSH Web GUI through your own frps server behind an authenticated gateway. Configure it in Plugins → frp tunnel; visitors sign in at the public domain first, and DSH's signed cookie never leaves the Host process.",
+    "detail": "docs/DETAIL.md"
   }
 }

@@ -6,9 +6,9 @@ import path from 'node:path';
 import http from 'node:http';
 import { Readable } from 'node:stream';
 
-import { Config, apply } from '../index.js';
-import { createPanelApi, exchangeDshCookie } from '../status-routes.js';
-import { NoChecksumError } from '../frpc-manager.js';
+import { Config, apply } from '../src/index.js';
+import { createPanelApi, exchangeDshCookie } from '../src/status-routes.js';
+import { NoChecksumError } from '../src/frpc-manager.js';
 
 function fakeResponse() {
   const captured = { status: 0, headers: {}, body: '' };
@@ -48,11 +48,16 @@ async function withTempHome(fn) {
   }
 }
 
-async function bootPlugin({ config = {}, editor } = {}) {
+async function bootPlugin({ config = {}, editor, withConfigEditor = true, entry } = {}) {
   const registered = [];
   const disposers = [];
   let currentConfig = { ...Config, ...config };
+  const fiberEntry = entry ?? {
+    options: { id: 'dsh-frp', name: 'dsh-frp', config: {} },
+    fiber: { state: 'active' },
+  };
   const ctx = {
+    fiber: { entry: fiberEntry },
     webServer: {
       getOrigin: () => 'http://127.0.0.1:55570',
       register: (route) => {
@@ -66,14 +71,19 @@ async function bootPlugin({ config = {}, editor } = {}) {
     },
     webApp: { getAdvertisedUrl: () => 'http://127.0.0.1:55570' },
     subprocess: { spawn: () => ({ stdout: null, stderr: null, done: new Promise(() => {}), terminate: async () => {} }) },
-    get: (name) =>
-      name === 'configEditor'
-        ? editor ?? {
-            edit: async (id, updater) => {
-              currentConfig = updater(currentConfig);
-            },
-          }
-        : undefined,
+    get: (name) => {
+      if (name !== 'configEditor' || !withConfigEditor) return undefined;
+      // Mirrors ConfigEditor.edit(entry, change): the argument is a Loader
+      // entry, and a row id is refused, exactly as the Host does.
+      return editor ?? {
+        edit: async (target, change) => {
+          if (target !== fiberEntry) throw new Error('Configuration entry is no longer available');
+          const next = change({ ...(target.options.config ?? {}) }, {});
+          target.options.config = next;
+          currentConfig = next;
+        },
+      };
+    },
     effect: (fn) => {
       disposers.push(fn());
     },
@@ -89,7 +99,7 @@ async function bootPlugin({ config = {}, editor } = {}) {
       }
     }
   };
-  return { handler: registered[0].handler, disposers, close, getConfig: () => currentConfig };
+  return { handler: registered[0].handler, disposers, close, getConfig: () => currentConfig, entry: fiberEntry };
 }
 
 async function panel(handler, method, payload, rpcId) {
@@ -143,16 +153,81 @@ test('the panel route answers the envelope shape on failure too', async () => {
       const { handler, close } = await bootPlugin();
       try {
       const { status, body } = await panel(handler, 'start', {}, 'rpc-2');
-      assert.equal(status, 409);
+      // The envelope carries the failure; a non-2xx would make the GUI's rpc
+      // client throw a transport error and hide the reason from the panel.
+      assert.equal(status, 200);
       assert.equal(body.type, 'server-response');
       assert.equal(body.rpcId, 'rpc-2');
       assert.equal(body.result.ok, false);
-      assert.equal(typeof body.result.error.code, 'string');
+      assert.equal(body.result.error.code, 'start-gate');
+      assert.equal(typeof body.result.error.message, 'string');
       assert.equal(typeof body.result.error.message, 'string');
       assert.deepEqual(body.result.error.details, { missing: body.result.error.details.missing });
       assert.ok(Array.isArray(body.result.error.details.missing));
       assert.ok(body.result.error.details.missing.includes('login-password'));
       } finally { await close(); }
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+test('a panel save persists through the config editor and is visible afterwards', async () => {
+  await withTempHome(async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ status: 303, headers: { getSetCookie: () => ['a=b; Path=/'] } });
+    try {
+      const { handler, close, getConfig, entry } = await bootPlugin({ config: { login: { username: 'owner' } } });
+      try {
+        const saved = await panel(handler, 'setFrpsConfig', {
+          serverAddr: 'frp.example.com',
+          serverPort: 17000,
+          domain: 'dsh.example.com',
+          publicBaseUrl: 'https://dsh.example.com',
+          useTLS: true,
+        }, 'rpc-save-1');
+        assert.equal(saved.body.result.ok, true, 'the save must not report a failure');
+        assert.equal(saved.body.result.value.restartRequired, true);
+
+        // The persisted row is what the next `apply` reads.
+        assert.equal(entry.options.config.frps.serverAddr, 'frp.example.com');
+        assert.equal(entry.options.config.frps.serverPort, 17000);
+        assert.equal(entry.options.config.publicBaseUrl, 'https://dsh.example.com');
+        assert.equal(getConfig().frps.domain, 'dsh.example.com');
+
+        // And the panel reads the saved values back.
+        const status = await panel(handler, 'status', {}, 'rpc-save-2');
+        assert.equal(status.body.result.value.serverAddr, 'frp.example.com');
+        assert.equal(status.body.result.value.domain, 'dsh.example.com');
+        assert.deepEqual(status.body.result.value.missing.includes('frps-domain'), false);
+      } finally {
+        await close();
+      }
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+test('a save without a config editor fails loudly instead of pretending to persist', async () => {
+  await withTempHome(async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ status: 303, headers: { getSetCookie: () => ['a=b; Path=/'] } });
+    try {
+      const { handler, close, getConfig } = await bootPlugin({ withConfigEditor: false });
+      try {
+        const saved = await panel(handler, 'setFrpsConfig', {
+          serverAddr: 'frp.example.com',
+          serverPort: 17000,
+          domain: 'dsh.example.com',
+          publicBaseUrl: 'https://dsh.example.com',
+        }, 'rpc-save-3');
+        assert.equal(saved.body.result.ok, false);
+        assert.match(saved.body.result.error.message, /config/i);
+        assert.equal(getConfig().frps?.serverAddr ?? '', '', 'the live config must not move on an unsaved value');
+      } finally {
+        await close();
+      }
     } finally {
       globalThis.fetch = realFetch;
     }
@@ -213,8 +288,6 @@ test('status exposes gateway health so a dead gateway is not reported as a stopp
     binaryPresent: () => '/cache/frpc',
     downloadState: () => ({ pct: undefined }),
     checksumAvailable: () => true,
-    confirmNoChecksum: async () => {},
-    noChecksumConfirmed: () => false,
     platform: () => ({ platform: 'darwin', arch: 'arm64' }),
     gatewayState: () => ({ ok: false, message: 'gateway stopped listening' }),
   };
@@ -247,8 +320,6 @@ test('the download endpoint runs the download itself and reports a no-checksum c
     binaryPresent: () => (fail ? undefined : '/cache/frpc'),
     downloadState: () => ({ pct: undefined }),
     checksumAvailable: () => false,
-    confirmNoChecksum: async () => {},
-    noChecksumConfirmed: () => false,
     platform: () => ({ platform: 'darwin', arch: 'arm64' }),
   };
   const api = createPanelApi(deps);
@@ -277,4 +348,72 @@ test('exchangeDshCookie mints on the origin authority, not the advertised URL', 
     fetchImpl,
   });
   assert.equal(seen[0], 'http://127.0.0.1:55570/?token=abc');
+});
+
+test('a cached frpc is reported as present before the first start', async () => {
+  await withTempHome(async (home) => {
+    const cached = path.join(home, 'dsh-frp', 'bin', 'frp_0.72.0_' + process.platform + '_' + process.arch, 'frpc');
+    await fs.promises.mkdir(path.dirname(cached), { recursive: true });
+    await fs.promises.writeFile(cached, '#!/bin/sh\n', { mode: 0o755 });
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({ status: 303, headers: { getSetCookie: () => ['a=b; Path=/'] } });
+    try {
+      const { handler, close } = await bootPlugin();
+      try {
+        await panel(handler, 'setLogin', { username: 'owner', password: 'a-long-enough-password' }, 'rpc-l');
+        await panel(handler, 'setFrpsToken', { token: 'tok' }, 'rpc-t');
+        await panel(handler, 'setFrpsConfig', {
+          serverAddr: 'frp.example.com',
+          serverPort: 17000,
+          domain: 'dsh.example.com',
+          publicBaseUrl: 'https://dsh.example.com',
+        }, 'rpc-c');
+
+        const { body } = await panel(handler, 'status', {}, 'rpc-s');
+        const status = body.result.value;
+        // The binary is on disk, so the panel must not claim it is missing and
+        // must not tell the user to download it again.
+        assert.equal(status.state, 'stopped');
+        assert.equal(status.reason, undefined);
+        assert.equal(status.binaryPath, cached);
+        assert.equal(status.configuredBinaryPath, '');
+      } finally {
+        await close();
+      }
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+test('saving the values that are already live does not reload the plugin', async () => {
+  await withTempHome(async () => {
+    let edits = 0;
+    const editor = {
+      edit: async () => {
+        edits += 1;
+      },
+    };
+    const { handler, close } = await bootPlugin({ editor });
+    try {
+      const values = {
+        serverAddr: 'frp.example.com',
+        serverPort: 17000,
+        domain: 'dsh.example.com',
+        publicBaseUrl: 'https://dsh.example.com',
+      };
+      const first = await panel(handler, 'setFrpsConfig', values, 'rpc-1');
+      assert.equal(first.body.result.ok, true);
+      assert.equal(edits, 1, 'a real change is persisted');
+
+      // The reload an edit triggers drops the running tunnel, so a save that
+      // changes nothing must not go through the config editor at all.
+      const second = await panel(handler, 'setFrpsConfig', { ...values, domain: 'DSH.example.com' }, 'rpc-2');
+      assert.equal(second.body.result.ok, true);
+      assert.equal(edits, 1, 'an unchanged save does not reload the plugin');
+    } finally {
+      await close();
+    }
+  });
 });

@@ -9,7 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 
-import { CHECKSUMS, ensureFrpcBinary, sha256File, ChecksumError, NoChecksumError } from '../frpc-manager.js';
+import { CHECKSUMS, ensureFrpcBinary, sha256File, ChecksumError, NoChecksumError } from '../src/frpc-manager.js';
 
 const execFileAsync = promisify(execFile);
 const VERSION = '0.72.0';

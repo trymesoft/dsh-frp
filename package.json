@@ -1,32 +1,57 @@
 {
-  "name": "@local/dsh-frp",
+  "name": "dsh-frp",
   "version": "0.1.0",
-  "private": true,
-  "description": "Expose the local DSH Web GUI to the public internet through your own frps server, behind an authenticated gateway.",
-  "type": "module",
+  "description": "Expose the local DeepSeek Harness Web GUI through your own frps server, behind an authenticated gateway.",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "frp",
+    "frps",
+    "tunnel",
+    "reverse-proxy",
+    "remote-access",
+    "self-hosted"
+  ],
+  "homepage": "https://github.com/trymesoft/dsh-frp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trymesoft/dsh-frp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/trymesoft/dsh-frp/issues"
+  },
+  "author": "trymesoft",
   "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.2-rc.5 <0.3.0"
+  },
   "exports": {
-    ".": "./index.js",
-    "./client": "./client.js",
+    ".": "./src/index.js",
+    "./client": "./src/client.js",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json",
     "./icon": "./icon.svg"
   },
   "files": [
-    "index.js",
+    "src",
     "cordis.patch.yml",
-    "gateway.js",
-    "gateway-session.js",
-    "header-rules.js",
-    "frpc-config.js",
-    "frpc-manager.js",
-    "status-routes.js",
-    "client.js",
     "locale/*.json",
     "docs",
     "icon.svg"
   ],
+  "scripts": {
+    "test": "node --test test/",
+    "check": "node --check src/index.js && node --check src/client.js && node --check src/gateway.js && node --check src/gateway-session.js && node --check src/header-rules.js && node --check src/frpc-config.js && node --check src/frpc-manager.js && node --check src/status-routes.js && node --test test/",
+    "prepack": "npm run check"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

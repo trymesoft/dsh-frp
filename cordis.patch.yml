@@ -2,7 +2,7 @@
 # (dsh.bundle.patch + dsh.client), and the panel lives in the bundle page.
 - insert:
     - id: dsh-frp
-      name: '@local/dsh-frp'
+      name: 'dsh-frp'
       config:
         enabled: true
         autoStart: false

@@ -35,6 +35,29 @@ if (process.env.STUB_DESCRIBE === '1') {
 }
 
 const delay = Number(process.env.STUB_SLOW_MS ?? 0);
+
+/**
+ * frpc 0.72 answers /api/status with one array per proxy type: {http:[...]}.
+ * A status file lets a test move the proxy through stages while frpc runs.
+ */
+function proxyEntry() {
+  let dynamic;
+  if (process.env.STUB_STATUS_FILE) {
+    try {
+      dynamic = JSON.parse(fs.readFileSync(process.env.STUB_STATUS_FILE, 'utf8'));
+    } catch {
+      dynamic = undefined;
+    }
+  }
+  return {
+    name: proxyName,
+    status: dynamic?.status ?? process.env.STUB_PROXY_STATUS ?? 'running',
+    type: 'http',
+    err: dynamic?.err ?? process.env.STUB_PROXY_ERR ?? '',
+    local_addr: '127.0.0.1:' + localPort,
+  };
+}
+
 setTimeout(() => {
   const server = http.createServer((req, res) => {
     if (req.url === '/healthz') {
@@ -50,7 +73,11 @@ setTimeout(() => {
         res.end('unauthorized');
         return;
       }
-      const body = JSON.stringify({ clientCount: 1, proxies: [{ name: proxyName, status: 'running', type: 'http', local_addr: '127.0.0.1:' + localPort }] });
+      const proxy = proxyEntry();
+      const body =
+        process.env.STUB_LEGACY_STATUS_SHAPE === '1'
+          ? JSON.stringify({ clientCount: 1, proxies: [proxy] })
+          : JSON.stringify({ http: [proxy] });
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(body);
       return;

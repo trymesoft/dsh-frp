@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn as spawnProcess } from 'node:child_process';
 
-import { createFrpcManager } from '../frpc-manager.js';
+import { createFrpcManager } from '../src/frpc-manager.js';
 
 const STUB = path.join(import.meta.dirname, 'fixtures', 'stub-frpc.mjs');
 
@@ -122,6 +122,19 @@ test('a stale exit from a stopped child cannot disturb a fresh one', async () =>
     assert.equal(manager.status().state, 'running', 'the fresh child stays supervised');
     await manager.stop();
     assert.equal(state.terminations, 2, 'both children were terminated');
+  } finally {
+    await manager.stop();
+  }
+});
+
+test('an admin API that never answers reports a start timeout instead of starting forever', async () => {
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
+  const { opts } = makeContext(workDir, { env: { STUB_SLOW_MS: '60000' } });
+  const manager = createFrpcManager({ ...opts, startTimeoutMs: 200 });
+  try {
+    await manager.start();
+    await waitFor(() => manager.status().state === 'error', { timeout: 4000 });
+    assert.equal(manager.status().reason?.code, 'start-timeout');
   } finally {
     await manager.stop();
   }

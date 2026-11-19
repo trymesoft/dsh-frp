@@ -71,10 +71,22 @@ export async function exchangeDshCookie(opts) {
   return pairs.join('; ');
 }
 
+/**
+ * A panel-facing rejection: `code` lets the panel localize the reason instead
+ * of showing the Host's English sentence, `details` carries the field or list
+ * the panel needs to point at.
+ */
+function invalid(code, message, details) {
+  const error = new Error(message);
+  error.code = code;
+  if (details !== undefined) error.details = details;
+  return error;
+}
+
 function requireText(value, label) {
   const text = String(value ?? '').trim();
-  if (text.length === 0) throw new Error(label + ' must not be empty');
-  if (/[\r\n]/.test(text)) throw new Error(label + ' must not contain a newline');
+  if (text.length === 0) throw invalid('empty-field', label + ' must not be empty', { field: label });
+  if (/[\r\n]/.test(text)) throw invalid('invalid-text', label + ' must not contain a newline', { field: label });
   return text;
 }
 
@@ -82,13 +94,13 @@ const DOMAIN_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,
 
 function requireDomain(value, label) {
   const text = requireText(value, label);
-  if (!DOMAIN_RE.test(text)) throw new Error(label + ' must be a plain domain name');
+  if (!DOMAIN_RE.test(text)) throw invalid('invalid-domain', label + ' must be a plain domain name', { field: label, value: text });
   return text.toLowerCase();
 }
 
 function requirePort(value, label) {
   const port = Number(value);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(label + ' must be an integer TCP port');
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw invalid('invalid-port', label + ' must be an integer TCP port', { field: label, value });
   return port;
 }
 
@@ -98,13 +110,13 @@ function requirePublicUrl(value) {
   try {
     parsed = new URL(text);
   } catch {
-    throw new Error('public base URL is not a valid URL');
+    throw invalid('invalid-url', 'public base URL is not a valid URL', { field: 'publicBaseUrl', value: text });
   }
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new Error('public base URL must use http or https');
+    throw invalid('invalid-url', 'public base URL must use http or https', { field: 'publicBaseUrl', value: text });
   }
   if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
-    throw new Error('public base URL must be an origin without a path');
+    throw invalid('invalid-url', 'public base URL must be an origin without a path', { field: 'publicBaseUrl', value: text });
   }
   return parsed.origin;
 }
@@ -122,8 +134,6 @@ function requirePublicUrl(value) {
  * @param {() => string | undefined} deps.binaryPresent
  * @param {() => {pct?: number}} deps.downloadState
  * @param {(version: string, platform: string, arch: string) => boolean} deps.checksumAvailable
- * @param {() => Promise<void>} deps.confirmNoChecksum
- * @param {() => boolean} deps.noChecksumConfirmed
  * @param {() => {platform: string, arch: string}} deps.platform
  */
 export function createPanelApi(deps) {
@@ -150,13 +160,19 @@ export function createPanelApi(deps) {
     const download = deps.downloadState();
     const managerStatus = deps.manager.status();
 
+    // `reason` is what the panel renders (it owns the language); `message` is
+    // the Host's diagnostic sentence and stays untranslated on purpose.
     let state;
     let message = managerStatus.message;
+    let reason = managerStatus.reason;
     if (!gate.ok) {
       state = 'not-configured';
-      message = 'Missing: ' + gate.missing.join(', ');
+      message = undefined;
+      reason = { code: 'not-configured', params: { missing: gate.missing } };
     } else if (!binary) {
       state = download.pct !== undefined ? 'downloading' : 'need-binary';
+      message = undefined;
+      reason = download.pct !== undefined ? { code: 'downloading', params: { pct: download.pct } } : { code: 'need-binary' };
     } else {
       state = managerStatus.state;
     }
@@ -164,6 +180,7 @@ export function createPanelApi(deps) {
     return {
       state,
       message,
+      reason,
       missing: gate.missing,
       publicUrl: String(config?.publicBaseUrl ?? ''),
       domain: String(config?.frps?.domain ?? ''),
@@ -174,14 +191,17 @@ export function createPanelApi(deps) {
       hasFrpsToken: Boolean(credentials.frpsToken),
       hasLoginPassword: Boolean(credentials.loginPassword),
       binaryMode: config?.frpc?.binaryPath ? 'path' : 'download',
+      // `binaryPath` is the binary in use, which in download mode is a cache
+      // path; the form must seed from the configured value, or "use a local
+      // path" would offer the cache path as if the user had typed it.
       binaryPath: binary,
+      configuredBinaryPath: String(config?.frpc?.binaryPath ?? ''),
       downloadVersion: String(config?.frpc?.downloadVersion ?? ''),
       downloadPct: download.pct,
       checksumAvailable: (() => {
         const { platform, arch } = deps.platform();
         return deps.checksumAvailable(String(config?.frpc?.downloadVersion ?? ''), platform, arch);
       })(),
-      noChecksumConfirmed: deps.noChecksumConfirmed(),
       proxyState: managerStatus.proxyState,
       gateway: gateway.ok ? 'ok' : 'error',
       gatewayMessage: gateway.message,
@@ -197,7 +217,9 @@ export function createPanelApi(deps) {
     const gate = computeStartGate(config, credentials);
     if (!gate.ok) {
       const error = new Error('Cannot start: missing ' + gate.missing.join(', '));
+      error.code = 'start-gate';
       error.missing = gate.missing;
+      error.details = { missing: gate.missing };
       throw error;
     }
     await deps.ensureBinary(false);
@@ -230,9 +252,9 @@ export function createPanelApi(deps) {
     const username = requireText(payload?.username, 'username');
     const password = String(payload?.password ?? '');
     if (password.length < MIN_PASSWORD_LENGTH) {
-      throw new Error('password must be at least ' + MIN_PASSWORD_LENGTH + ' characters');
+      throw invalid('password-too-short', 'password must be at least ' + MIN_PASSWORD_LENGTH + ' characters', { min: MIN_PASSWORD_LENGTH });
     }
-    if (/[\r\n]/.test(password)) throw new Error('password must not contain a newline');
+    if (/[\r\n]/.test(password)) throw invalid('invalid-text', 'password must not contain a newline', { field: 'password' });
 
     const current = deps.config();
     if (String(current?.login?.username ?? '') !== username) {
@@ -297,7 +319,7 @@ export function createPanelApi(deps) {
       await deps.editor.edit((config) => ({ ...config, frpc: { ...(config.frpc ?? {}), binaryPath: '' } }));
       return { restartRequired: true };
     }
-    throw new Error('chooseBinary mode must be "path" or "download"');
+    throw invalid('invalid-mode', 'chooseBinary mode must be "path" or "download"', { value: String(mode) });
   }
 
   const handlers = {
@@ -313,10 +335,6 @@ export function createPanelApi(deps) {
     setFrpsConfig,
     chooseBinary,
     download,
-    confirmNoChecksum: async () => {
-      await deps.confirmNoChecksum();
-      return { ok: true };
-    },
   };
 
   return {

@@ -9,7 +9,7 @@ import {
   rewriteResponseHeaders,
   rewriteLocation,
   parseRequestTarget,
-} from '../header-rules.js';
+} from '../src/header-rules.js';
 
 test('stripHopByHop drops the fixed list, Connection-named headers and Proxy-Connection', () => {
   const out = stripHopByHop({

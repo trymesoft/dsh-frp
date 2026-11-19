@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "公网穿透（frp）",
-    "description": "经自有 frps 与鉴权网关把本机 DSH 暴露到公网域名"
+    "description": "经自有 frps 与带登录页的网关把本机 DSH Web GUI 发布到公网域名。在 插件 → 公网穿透（frp） 里配置并启动；公网访客先登录，DSH 的签名 Cookie 始终留在 Host 进程内。",
+    "detail": "docs/DETAIL.zh.md"
   }
 }

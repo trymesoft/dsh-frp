@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 
-import { createGateway, loginHtml } from '../gateway.js';
-import { SessionAuthority, LoginThrottle } from '../gateway-session.js';
+import { createGateway, loginHtml } from '../src/gateway.js';
+import { SessionAuthority, LoginThrottle } from '../src/gateway-session.js';
 
 const DOMAIN = 'dsh.example.com';
 const PUBLIC_BASE = 'https://' + DOMAIN;
@@ -125,6 +125,28 @@ test('a non-101 upgrade answer is filtered like any other response', async () =>
     assert.doesNotMatch(raw, /127\.0\.0\.1:\d+/, 'the loopback origin must not leak');
     assert.ok(raw.includes(PUBLIC_BASE + '/nope'), 'Location is rewritten to the public base');
     assert.deepEqual(state.harvested, ['dsh-auth-abc=LEAK; Path=/']);
+  } finally {
+    await gateway.stop();
+    stub.server.close();
+  }
+});
+
+test('a 101 response still strips Set-Cookie before relaying', async () => {
+  const stub = await startUpgradeStub((req, socket) => {
+    socket.write(
+      'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n' +
+        'Set-Cookie: leaked=1; Path=/\r\nSet-Cookie2: leaked2=2\r\n\r\n',
+    );
+    socket.end();
+  });
+  const { gateway, port, state } = await makeGateway(stub.port);
+  try {
+    const cookie = await login(port);
+    const raw = await rawUpgrade(port, cookie);
+    assert.match(raw, /101 Switching Protocols/);
+    assert.doesNotMatch(raw, /Set-Cookie/i, 'a 101 head must not carry cookies either');
+    assert.doesNotMatch(raw, /leaked/, 'the upstream cookie value must not leak');
+    assert.deepEqual(state.harvested, ['leaked=1; Path=/', 'leaked2=2']);
   } finally {
     await gateway.stop();
     stub.server.close();

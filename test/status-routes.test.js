@@ -6,8 +6,8 @@ import {
   exchangeDshCookie,
   createPanelApi,
   PLUGIN_SCOPES,
-} from '../status-routes.js';
-import { SessionAuthority } from '../gateway-session.js';
+} from '../src/status-routes.js';
+import { SessionAuthority } from '../src/gateway-session.js';
 
 const PASSWORD = 'a-long-enough-password';
 const GOOD_CONFIG = {
@@ -31,7 +31,7 @@ function makeDeps(overrides = {}) {
   const store = overrides.store ?? makeStore({ [PLUGIN_SCOPES.loginPassword]: PASSWORD, [PLUGIN_SCOPES.frpsToken]: 'tok' });
   const edits = [];
   let config = overrides.config ?? GOOD_CONFIG;
-  const state = { started: 0, stopped: 0, state: 'stopped', message: undefined, proxyState: undefined, logs: ['line-1'] };
+  const state = { started: 0, stopped: 0, state: 'stopped', message: undefined, reason: undefined, proxyState: undefined, logs: ['line-1'] };
   const manager = {
     start: async () => {
       state.started += 1;
@@ -41,7 +41,7 @@ function makeDeps(overrides = {}) {
       state.stopped += 1;
       state.state = 'stopped';
     },
-    status: () => ({ state: state.state, message: state.message, proxyState: state.proxyState }),
+    status: () => ({ state: state.state, message: state.message, reason: state.reason, proxyState: state.proxyState }),
     logs: () => state.logs,
   };
   const deps = {
@@ -59,8 +59,6 @@ function makeDeps(overrides = {}) {
     binaryPresent: () => '/cache/frpc',
     downloadState: () => ({ pct: undefined }),
     checksumAvailable: () => true,
-    confirmNoChecksum: async () => {},
-    noChecksumConfirmed: () => false,
     platform: () => ({ platform: 'darwin', arch: 'arm64' }),
     ...overrides.deps,
   };
@@ -110,7 +108,7 @@ test('exchangeDshCookie refuses a non-303 answer and an empty cookie jar', async
   );
 });
 
-test('Review Focus 4 wiring: setLogin bumps the stored epoch and kills old sessions', async () => {
+test('setLogin bumps the stored epoch and kills old sessions', async () => {
   const store = makeStore({
     [PLUGIN_SCOPES.loginPassword]: PASSWORD,
     [PLUGIN_SCOPES.frpsToken]: 'tok',
@@ -150,6 +148,8 @@ test('start refuses to run when the gate reports missing prerequisites', async (
   await assert.rejects(api.endpoint('start', {}), (error) => {
     assert.ok(Array.isArray(error.missing));
     assert.ok(error.missing.includes('login-password'));
+    assert.equal(error.code, 'start-gate');
+    assert.deepEqual(error.details.missing, error.missing);
     return true;
   });
   assert.equal(managerState.started, 0);
@@ -180,6 +180,59 @@ test('setFrpsConfig rejects an invalid domain, port or public URL', async () => 
   await assert.rejects(api.endpoint('setFrpsConfig', { serverPort: 70000 }), /port/i);
   await assert.rejects(api.endpoint('setFrpsConfig', { publicBaseUrl: 'ftp://x' }), /public/i);
   await assert.rejects(api.endpoint('setFrpsConfig', { serverAddr: 'a\nb' }), /serverAddr|newline/i);
+});
+
+test('rejections carry a code and the field, so the panel can speak its own language', async () => {
+  const { deps } = makeDeps();
+  const api = createPanelApi(deps);
+  // The Host keeps its English diagnostics, but the panel localizes by code.
+  await assert.rejects(api.endpoint('setFrpsConfig', { domain: 'has space.example.com' }), (error) => {
+    assert.equal(error.code, 'invalid-domain');
+    assert.equal(error.details.field, 'domain');
+    return true;
+  });
+  await assert.rejects(api.endpoint('setFrpsConfig', { serverPort: 70000 }), (error) => {
+    assert.equal(error.code, 'invalid-port');
+    assert.equal(error.details.field, 'serverPort');
+    return true;
+  });
+  await assert.rejects(api.endpoint('setFrpsConfig', { publicBaseUrl: 'ftp://x' }), (error) => {
+    assert.equal(error.code, 'invalid-url');
+    return true;
+  });
+  await assert.rejects(api.endpoint('setFrpsConfig', { serverAddr: '' }), (error) => {
+    assert.equal(error.code, 'empty-field');
+    assert.equal(error.details.field, 'serverAddr');
+    return true;
+  });
+  await assert.rejects(api.endpoint('setLogin', { username: 'owner', password: 'short' }), (error) => {
+    assert.equal(error.code, 'password-too-short');
+    assert.equal(error.details.min, 12);
+    return true;
+  });
+});
+
+test('the not-configured state is a reason code, never an English sentence', async () => {
+  const store = makeStore({ [PLUGIN_SCOPES.frpsToken]: 'tok' });
+  const { deps } = makeDeps({ store, config: { ...GOOD_CONFIG, login: { username: '' } } });
+  const status = await createPanelApi(deps).endpoint('status', {});
+  assert.equal(status.state, 'not-configured');
+  assert.equal(status.message, undefined, 'the panel owns the wording');
+  assert.equal(status.reason.code, 'not-configured');
+  assert.ok(status.reason.params.missing.includes('login-password'));
+  assert.ok(status.reason.params.missing.includes('login-username'));
+});
+
+test('manager reasons reach the panel untouched', async () => {
+  const { deps, managerState } = makeDeps();
+  const api = createPanelApi(deps);
+  await api.endpoint('start', {});
+  managerState.state = 'error';
+  managerState.message = 'frps rejected the proxy: start error';
+  managerState.reason = { code: 'proxy-error', params: { status: 'start error', detail: 'port already used' } };
+  const status = await api.endpoint('status', {});
+  assert.deepEqual(status.reason, { code: 'proxy-error', params: { status: 'start error', detail: 'port already used' } });
+  assert.equal(status.message, 'frps rejected the proxy: start error');
 });
 
 test('chooseBinary writes the path through the editor and echoes restartRequired', async () => {
@@ -224,4 +277,15 @@ test('status composes the panel states: not-configured, need-binary, running', a
   assert.equal(running.publicUrl, 'https://dsh.example.com');
   assert.deepEqual(running.logsTail, ['line-1']);
   assert.equal(running.binaryPath, '/cache/frpc');
+  assert.equal(running.configuredBinaryPath, '', 'download mode seeds the form from an empty configured path');
+});
+
+test('status separates the configured binary path from the binary in use', async () => {
+  const configured = makeDeps({
+    config: { ...GOOD_CONFIG, frpc: { binaryPath: '/opt/frp/frpc' } },
+  });
+  const status = await createPanelApi(configured.deps).endpoint('status', {});
+  assert.equal(status.binaryMode, 'path');
+  assert.equal(status.configuredBinaryPath, '/opt/frp/frpc');
+  assert.equal(status.binaryPath, '/cache/frpc', 'the running binary is the resolved one');
 });

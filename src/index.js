@@ -7,6 +7,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import fsp from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
 import { PassThrough } from 'node:stream';
 
 import { createGateway, loginHtml } from './gateway.js';
@@ -19,8 +20,7 @@ export const name = 'dsh-frp';
 export const inject = ['webServer', 'connection', 'webApp', 'subprocess'];
 
 const PANEL_PREFIX = '/dsh-frp';
-const ENTRY_ID = 'dsh-frp';
-const COOKIE_NAME = 'dsh-frp-session';
+const COOKIE_NAME = 'dsh_frp_session';
 
 /** Loader-row defaults, used for documentation and for canonicalConfig's fallbacks. */
 const CONFIG_DEFAULTS = {
@@ -135,11 +135,28 @@ function dataDirOf() {
   return path.join(home, 'dsh-frp');
 }
 
+/**
+ * Normalize the public entrance to a bare origin.
+ *
+ * The URL parser lowercases the scheme and host and drops a default port, so
+ * `HTTPS://Dsh.Example.com/` and `https://dsh.example.com` behave identically —
+ * in particular for the `Secure` / `__Host-` decision below.
+ */
+function normalizePublicBaseUrl(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  try {
+    return new URL(text).origin;
+  } catch {
+    return text;
+  }
+}
+
 function canonicalConfig(config) {
   return {
     enabled: config?.enabled !== false,
     autoStart: Boolean(config?.autoStart),
-    publicBaseUrl: String(config?.publicBaseUrl ?? ''),
+    publicBaseUrl: normalizePublicBaseUrl(config?.publicBaseUrl),
     frps: {
       serverAddr: String(config?.frps?.serverAddr ?? ''),
       serverPort: Number(config?.frps?.serverPort ?? 7000),
@@ -253,25 +270,21 @@ function adaptSubprocessHandle(handle) {
  * Persist a Config change through the Host's config editor.
  *
  * The editor owns the Loader row, so the panel never writes cordis.patch.yml
- * itself. The call shape is probed once because this Host build exposes it
- * either as edit(id, updater) or edit({ id }, updater).
+ * itself. `ConfigEditor.edit()` takes the Loader *entry*, the identity it
+ * validates, reconciles and restarts: a row id (or `{ id }`) is not an entry
+ * and is refused with "Configuration entry is no longer available", which
+ * used to leave every panel save unpersisted.
+ *
+ * @param {object} ctx Cordis context
+ * @param {(current: object, inherited: object) => object} change complete next config
  */
-async function persistConfig(ctx, updater) {
+async function persistConfig(ctx, change) {
   const service = ctx.get?.('configEditor');
-  if (!service || typeof service.edit !== 'function') {
-    throw new Error('configEditor service is unavailable: the change applies to this session only, edit the plugin Config to persist it');
+  const entry = ctx.fiber?.entry;
+  if (!service || typeof service.edit !== 'function' || entry === undefined) {
+    throw new Error('This profile cannot save plugin configuration: its config editor is unavailable, so edit the plugin Config directly');
   }
-  try {
-    await service.edit(ENTRY_ID, updater);
-    return;
-  } catch (first) {
-    try {
-      await service.edit({ id: ENTRY_ID }, updater);
-      return;
-    } catch {
-      throw first;
-    }
-  }
+  await service.edit(entry, change);
 }
 
 /**
@@ -305,7 +318,7 @@ export async function apply(ctx, rawConfig) {
     signingSecret: secret,
     epoch: () => epoch,
     ttlHours: config.gateway.sessionTtlHours,
-    secure: String(config.publicBaseUrl).startsWith('https://'),
+    secure: config.publicBaseUrl.startsWith('https://'),
     cookieName: COOKIE_NAME,
   });
 
@@ -349,7 +362,11 @@ export async function apply(ctx, rawConfig) {
       const expectedUser = config.login.username;
       const expectedPassword = await credentials.read(PLUGIN_SCOPES.loginPassword);
       if (!expectedUser || !expectedPassword) return false;
-      return constantTimeEqual(username, expectedUser) && constantTimeEqual(password, expectedPassword);
+      // Both comparisons run before the result is combined: a wrong username
+      // must not short-circuit the password comparison.
+      const userOk = constantTimeEqual(username, expectedUser);
+      const passwordOk = constantTimeEqual(password, expectedPassword);
+      return userOk && passwordOk;
     },
     throttle,
     publicDomain: () => config.frps.domain || undefined,
@@ -371,7 +388,6 @@ export async function apply(ctx, rawConfig) {
   let currentBinary;
   let frpsToken = await credentials.read(PLUGIN_SCOPES.frpsToken);
   const download = { pct: undefined };
-  let noChecksumConfirmed = false;
 
   async function refreshToken() {
     frpsToken = (await credentials.read(PLUGIN_SCOPES.frpsToken)) ?? frpsToken;
@@ -408,13 +424,18 @@ export async function apply(ctx, rawConfig) {
     void manager.killImmediately();
   });
 
+  /** Where a downloaded frpc for the configured version would live. */
+  function cachedBinaryPath() {
+    return path.join(dir, 'bin', 'frp_' + config.frpc.downloadVersion + '_' + process.platform + '_' + process.arch, 'frpc');
+  }
+
   async function ensureBinary(allowNoChecksum = false) {
     if (config.frpc.binaryPath) {
       await fsp.access(config.frpc.binaryPath);
       currentBinary = config.frpc.binaryPath;
       return currentBinary;
     }
-    const cached = path.join(dir, 'bin', 'frp_' + config.frpc.downloadVersion + '_' + process.platform + '_' + process.arch, 'frpc');
+    const cached = cachedBinaryPath();
     try {
       await fsp.access(cached);
       currentBinary = cached;
@@ -430,7 +451,7 @@ export async function apply(ctx, rawConfig) {
         platform: process.platform,
         arch: process.arch,
         cacheDir: dir,
-        allowNoChecksum: noChecksumConfirmed || Boolean(allowNoChecksum),
+        allowNoChecksum: Boolean(allowNoChecksum),
         onProgress: (pct) => {
           download.pct = pct;
         },
@@ -441,14 +462,43 @@ export async function apply(ctx, rawConfig) {
     }
   }
 
+  /**
+   * Resolve the binary already on disk without downloading anything.
+   *
+   * Without this, every reload reports "frpc missing" until someone starts the
+   * tunnel, and the panel's next-step advice tells the user to fetch a binary
+   * that is already cached.
+   */
+  async function detectBinary() {
+    const candidate = config.frpc.binaryPath || cachedBinaryPath();
+    try {
+      await fsp.access(candidate);
+      currentBinary = candidate;
+    } catch {
+      currentBinary = undefined;
+    }
+  }
+
+  await detectBinary();
+
   // --- panel API ----------------------------------------------------------
+  // A panel edit is persisted first and applied second: the config editor
+  // restarts this entry, so the value on disk is the one the next `apply`
+  // reads. Mutating the live config first would show unsaved values in the
+  // panel and silently drop them on the next reload.
   const editor = {
     async edit(updater) {
-      const next = canonicalConfig(updater(canonicalConfig(config)));
-      const before = JSON.stringify(canonicalConfig(config));
+      // Saving the values that are already live must not restart the plugin:
+      // the reload drops the tunnel, and a no-op save is the commonest thing a
+      // user does while checking the form.
+      const before = canonicalConfig(config);
+      let next = canonicalConfig(updater(before));
+      if (isDeepStrictEqual(next, before)) return;
+      await persistConfig(ctx, (current) => {
+        next = canonicalConfig(updater(canonicalConfig(current)));
+        return next;
+      });
       Object.assign(config, next);
-      if (JSON.stringify(next) === before) return;
-      await persistConfig(ctx, () => next);
     },
   };
 
@@ -471,15 +521,11 @@ export async function apply(ctx, rawConfig) {
     binaryPresent: () => currentBinary,
     downloadState: () => download,
     checksumAvailable: (version, platform, arch) => Boolean(CHECKSUMS[version + '_' + platform + '_' + arch]),
-    confirmNoChecksum: async () => {
-      noChecksumConfirmed = true;
-    },
     bumpEpoch: async () => {
       epoch += 1;
       await credentials.write(PLUGIN_SCOPES.sessionEpoch, String(epoch));
     },
     gatewayState: () => (gatewayError ? { ok: false, message: gatewayError } : { ok: true }),
-    noChecksumConfirmed: () => noChecksumConfirmed,
     platform: () => ({ platform: process.platform, arch: process.arch }),
   });
 
@@ -517,8 +563,13 @@ export async function apply(ctx, rawConfig) {
     const endpointName = isEnvelope ? body.method : pathEndpoint;
     const payload = isEnvelope ? (body.payload ?? {}) : body;
 
+    // An application failure still travels as a successful HTTP exchange: the
+    // GUI's rpc client throws on any non-2xx before reading the envelope, so a
+    // 400 here would hide the Host's error code behind "transport failure" and
+    // the panel could not say why a save was refused. Bare JSON callers (curl,
+    // the tests) keep the meaningful status instead.
     const respond = (status, result, error) => {
-      res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+      res.writeHead(isEnvelope ? 200 : status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
       if (isEnvelope) {
         const envelopeOut = error
           ? { type: 'server-response', rpcId: body.rpcId, result: { ok: false, error } }
@@ -540,10 +591,11 @@ export async function apply(ctx, rawConfig) {
     } catch (error) {
       const missing = error?.missing ?? [];
       const code = error?.code ?? (missing.length ? 'start-gate' : 'request-failed');
+      const details = missing.length ? { missing } : (error?.details ?? {});
       respond(missing.length ? 409 : 400, undefined, {
         code: String(code),
         message: String(error?.message ?? error),
-        details: missing.length ? { missing } : {},
+        details,
       });
     }
   };

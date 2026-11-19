@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import net from 'node:net';
 
-import { createGateway, loginHtml } from '../gateway.js';
-import { SessionAuthority, LoginThrottle } from '../gateway-session.js';
+import { createGateway, loginHtml, negotiateLocale } from '../src/gateway.js';
+import { SessionAuthority, LoginThrottle } from '../src/gateway-session.js';
 
 const RETRY_COOKIE = 'dsh-auth-abc=RETRY; Path=/';
 const DOMAIN = 'dsh.example.com';
@@ -155,10 +155,21 @@ test('unauthenticated requests see the login page and nothing else', async () =>
     assert.equal(page.headers['cache-control'], 'no-store');
     assert.match(page.body, /<form[^>]+action="\/frp-login"/i);
     assert.match(page.body, /type="password"/i);
+    assert.match(page.body, /lang="en"/, 'no Accept-Language means English');
+    assert.match(page.body, /Sign in to continue/);
+    assert.ok(page.body.includes(DOMAIN), 'the login page names the tunnel host');
 
-    const withError = await request(port, { path: '/?e=1' });
+    const chinese = await request(port, { path: '/', headers: { 'accept-language': 'zh-CN,zh;q=0.9' } });
+    assert.match(chinese.body, /lang="zh-CN"/);
+    assert.match(chinese.body, /登录以继续/);
+
+    const withError = await request(port, { path: '/?e=1', headers: { 'accept-language': 'en-US,en;q=0.9' } });
     assert.equal(withError.status, 200);
     assert.match(withError.body, /data-login-error/);
+    assert.match(withError.body, /Incorrect username or password/);
+
+    const zhError = await request(port, { path: '/?e=1', headers: { 'accept-language': 'zh-CN' } });
+    assert.match(zhError.body, /用户名或密码不正确/);
 
     for (const path of ['/api/anything', '/index.html', '/static/app.js']) {
       const res = await request(port, { path });
@@ -167,6 +178,22 @@ test('unauthenticated requests see the login page and nothing else', async () =>
       assert.doesNotMatch(res.body, /upstream-body/);
     }
     assert.equal(stub.seen.length, 0, 'the upstream must not be reached without a session');
+  } finally {
+    await gateway.stop();
+    stub.server.close();
+  }
+});
+
+test('concurrent login attempts are serialized so one failure delay applies to each', async () => {
+  const stub = await startStub();
+  const { gateway, port } = await makeGateway(stub, {
+    gateway: { throttle: new LoginThrottle({ initialMs: 300, maxMs: 300, decayIntervalMs: 60_000 }) },
+  });
+  try {
+    const started = Date.now();
+    await Promise.all([login(port, 'wrong one'), login(port, 'wrong two')]);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 250, 'the second attempt must wait for the delay the first failure set, took ' + elapsed + 'ms');
   } finally {
     await gateway.stop();
     stub.server.close();
@@ -431,6 +458,15 @@ test('an unreachable upstream yields 502 and the gateway session survives', asyn
   }
 });
 
+test('negotiateLocale picks the ranked supported language', () => {
+  assert.equal(negotiateLocale('zh-CN,zh;q=0.9,en;q=0.8'), 'zh');
+  assert.equal(negotiateLocale('en-US,en;q=0.9'), 'en');
+  assert.equal(negotiateLocale('fr-FR,fr;q=0.9,zh;q=0.8'), 'zh');
+  assert.equal(negotiateLocale('fr-FR'), 'en');
+  assert.equal(negotiateLocale(undefined), 'en');
+  assert.equal(negotiateLocale('en;q=0, zh'), 'zh', 'q=0 is not acceptable');
+});
+
 test('loginHtml renders a self-contained page with the error hook', () => {
   const plain = loginHtml();
   assert.match(plain, /<!doctype html>/i);
@@ -438,7 +474,43 @@ test('loginHtml renders a self-contained page with the error hook', () => {
   assert.match(plain, /action="\/frp-login"/i);
   assert.doesNotMatch(plain, /data-login-error/);
 
-  const withError = loginHtml('bad credentials');
+  const withError = loginHtml({ error: 'bad credentials' });
   assert.match(withError, /data-login-error/);
   assert.match(withError, /bad credentials/);
+});
+
+test('loginHtml is bilingual, self-contained, themeable and escapes its inputs', () => {
+  const zh = loginHtml({ locale: 'zh' });
+  assert.match(zh, /<!doctype html>/i);
+  assert.match(zh, /lang="zh-CN"/);
+  assert.match(zh, /<form[^>]+method="post"/i);
+  assert.match(zh, /action="\/frp-login"/i);
+  assert.match(zh, /name="username"/);
+  assert.match(zh, /name="password"/);
+  assert.doesNotMatch(zh, /data-login-error/, 'no error banner on a clean visit');
+  assert.match(zh, /登录以继续|进入 DSH/);
+  assert.match(zh, /frp/i);
+
+  const en = loginHtml({ locale: 'en' });
+  assert.match(en, /lang="en"/);
+  assert.match(en, /Sign in to continue/);
+  assert.match(en, /Enter DSH/);
+
+  for (const page of [zh, en]) {
+    assert.match(page, /id="theme"/, 'the page ships its own light/dark switch');
+    assert.match(page, /data-theme/);
+    assert.match(page, /prefers-color-scheme/, 'the first paint follows the system preference');
+    assert.match(page, /localStorage/, 'the chosen theme is remembered');
+    assert.doesNotMatch(page, /(src|href)="https?:\/\//i, 'no external resources');
+  }
+
+  const withError = loginHtml({ locale: 'zh', error: 'bad-credentials', domain: 'dsh.example.com' });
+  assert.match(withError, /data-login-error/);
+  assert.match(withError, /用户名或密码不正确/);
+  assert.match(withError, /dsh\.example\.com/);
+
+  const hostile = loginHtml({ locale: 'en', error: '<script>alert(1)</script>', domain: '<b>x</b>' });
+  assert.doesNotMatch(hostile, /<script>alert\(1\)<\/script>/);
+  assert.match(hostile, /&lt;script&gt;/);
+  assert.match(hostile, /&lt;b&gt;/);
 });

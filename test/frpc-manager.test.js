@@ -7,7 +7,7 @@ import http from 'node:http';
 
 import { spawn as spawnProcess } from 'node:child_process';
 
-import { createFrpcManager } from '../frpc-manager.js';
+import { createFrpcManager } from '../src/frpc-manager.js';
 
 const STUB = path.join(import.meta.dirname, 'fixtures', 'stub-frpc.mjs');
 
@@ -196,6 +196,97 @@ test('onStateChange reports transitions and can be unsubscribed', async () => {
     unsubscribe();
     await manager.stop();
     assert.deepEqual(seen.slice(-1), ['running']);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test('manager reads the per-proxy-type admin answer frpc 0.72 actually serves', async () => {
+  // frpc answers {"http":[…]} — not {"proxies":[…]}. Reading only the latter
+  // left the panel on "启动中" forever while the tunnel was already serving.
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
+  const ctx = makeContext({ workDir });
+  const manager = createFrpcManager(ctx.opts);
+  try {
+    await manager.start();
+    await waitFor(() => manager.status().state === 'running');
+    assert.equal(manager.status().proxyState, 'running');
+    assert.equal(manager.status().reason, undefined);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test('the legacy {proxies:[…]} admin shape is still understood', async () => {
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
+  const ctx = makeContext({ workDir });
+  ctx.state.env.STUB_LEGACY_STATUS_SHAPE = '1';
+  const manager = createFrpcManager(ctx.opts);
+  try {
+    await manager.start();
+    await waitFor(() => manager.status().state === 'running');
+    assert.equal(manager.status().proxyState, 'running');
+  } finally {
+    await manager.stop();
+  }
+});
+
+test('a rejected proxy is an error with a reason, and a recovery returns to running', async () => {
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
+  const statusFile = path.join(workDir, 'status.json');
+  await fsp.writeFile(statusFile, JSON.stringify({ status: 'start error', err: 'port already used' }));
+  const ctx = makeContext({ workDir });
+  ctx.state.env.STUB_STATUS_FILE = statusFile;
+  const manager = createFrpcManager(ctx.opts);
+  try {
+    await manager.start();
+    await waitFor(() => manager.status().state === 'error', { timeout: 6000 });
+    const status = manager.status();
+    assert.equal(status.reason.code, 'proxy-error');
+    assert.equal(status.reason.params.status, 'start error');
+    assert.match(status.reason.params.detail, /port already used/);
+    assert.equal(status.proxyState, 'start error');
+
+    // frpc keeps retrying on its own; polling must report the recovery.
+    await fsp.writeFile(statusFile, JSON.stringify({ status: 'running' }));
+    await waitFor(() => manager.status().state === 'running', { timeout: 6000 });
+  } finally {
+    await manager.stop();
+  }
+});
+
+test('a proxy that never registers is reported as a start timeout, not silent "starting"', async () => {
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
+  const ctx = makeContext({ workDir });
+  ctx.state.env.STUB_PROXY_STATUS = 'waiting start';
+  const manager = createFrpcManager({ ...ctx.opts, startTimeoutMs: 250 });
+  try {
+    await manager.start();
+    const status = await waitFor(() => (manager.status().state === 'error' ? manager.status() : false), { timeout: 6000 });
+    assert.equal(status.reason.code, 'start-timeout');
+    assert.equal(status.reason.params.seconds, 1);
+  } finally {
+    await manager.stop();
+  }
+});
+
+test('start after a failed attempt replaces the child instead of returning early', async () => {
+  const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'test'));
+  const statusFile = path.join(workDir, 'status.json');
+  await fsp.writeFile(statusFile, JSON.stringify({ status: 'waiting start' }));
+  const ctx = makeContext({ workDir });
+  ctx.state.env.STUB_STATUS_FILE = statusFile;
+  const manager = createFrpcManager({ ...ctx.opts, startTimeoutMs: 250 });
+  try {
+    await manager.start();
+    await waitFor(() => manager.status().state === 'error', { timeout: 6000 });
+    const spawnsAtError = ctx.state.spawns.length;
+    assert.equal(spawnsAtError, 1);
+
+    await fsp.writeFile(statusFile, JSON.stringify({ status: 'running' }));
+    await manager.start();
+    assert.equal(ctx.state.spawns.length, spawnsAtError + 1, 'the retry spawns a fresh frpc');
+    await waitFor(() => manager.status().state === 'running', { timeout: 6000 });
   } finally {
     await manager.stop();
   }

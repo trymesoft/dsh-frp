@@ -6,7 +6,7 @@ import {
   tomlString,
   randomProxyNameSuffix,
   renderFrpcToml,
-} from '../frpc-config.js';
+} from '../src/frpc-config.js';
 
 const base = {
   serverAddr: 'frp.example.com',
