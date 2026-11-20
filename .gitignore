@@ -4,3 +4,11 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# Internal design notes: local only. `docs/` is published to npm wholesale,
+# so working notes never belong there or anywhere else in the package.
+design/
+
+# Working notes for agents in this checkout: local only.
+# The published bundle documents its own invariants in docs/architecture.md.
+AGENTS.md
