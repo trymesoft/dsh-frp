@@ -265,7 +265,7 @@ test/                 node:test 测试（116 个）
 ```
 
 ```sh
-npm test          # node --test test/
+npm test          # node --test test/*.test.js
 npm run check     # 先逐文件语法检查，再跑测试
 ```
 
