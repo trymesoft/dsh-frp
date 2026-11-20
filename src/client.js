@@ -95,10 +95,11 @@ window.__ModuleLoader__.load({
           'invalid-port': '端口必须是 1–65535 之间的整数。',
           'invalid-url': '公网入口 URL 必须 http(s) 开头、不带路径。',
           'invalid-mode': '无法识别的二进制模式。',
+          'invalid-auto-start': '自动启动只能是开或关。',
           'no-checksum': '该 frpc 版本没有内嵌 sha256，无法校验下载内容。',
           'request-failed': '插件拒绝了这次操作。',
         },
-        savedWhat: { frps: 'frps 连接配置', token: 'frps 认证 token', login: '公网登录凭据', binary: 'frpc 二进制设置' },
+        savedWhat: { frps: 'frps 连接配置', token: 'frps 认证 token', login: '公网登录凭据', binary: 'frpc 二进制设置', autoStart: '自动启动设置' },
         saving: '正在保存，插件会重新加载以应用配置…',
         saveOk: '✅ 已保存：{what}。',
         saveFailed: '❌ 保存失败：{reason}',
@@ -120,6 +121,8 @@ window.__ModuleLoader__.load({
         domain: '公网域名',
         publicBaseUrl: '公网入口 URL（含协议）',
         useTls: '启用传输 TLS',
+        autoStart: '随 DSH 重启自动恢复隧道',
+        autoStartHint: '勾选后，DSH 重启会自动拉起隧道（启动条件仍需满足）。勾选或取消会立即重载插件：勾选即现在启动，取消即现在断开。',
         token: 'frps 认证 token',
         save: '保存',
         saveToken: '保存 token',
@@ -214,10 +217,11 @@ window.__ModuleLoader__.load({
           'invalid-port': 'The port must be an integer between 1 and 65535.',
           'invalid-url': 'The public entrance URL must be http(s) and have no path.',
           'invalid-mode': 'Unknown binary mode.',
+          'invalid-auto-start': 'Auto-start must be true or false.',
           'no-checksum': 'This frpc version has no embedded sha256, so the download cannot be verified.',
           'request-failed': 'The plugin refused this action.',
         },
-        savedWhat: { frps: 'frps connection settings', token: 'frps auth token', login: 'public sign-in credentials', binary: 'frpc binary settings' },
+        savedWhat: { frps: 'frps connection settings', token: 'frps auth token', login: 'public sign-in credentials', binary: 'frpc binary settings', autoStart: 'auto-start setting' },
         saving: 'Saving; the plugin reloads to apply the change…',
         saveOk: '✅ Saved: {what}.',
         saveFailed: '❌ Save failed: {reason}',
@@ -239,6 +243,8 @@ window.__ModuleLoader__.load({
         domain: 'Public domain',
         publicBaseUrl: 'Public entrance URL (with scheme)',
         useTls: 'Transport TLS',
+        autoStart: 'Resume the tunnel when DSH restarts',
+        autoStartHint: 'When checked, a DSH restart brings the tunnel back, provided the start prerequisites still hold. Toggling reloads the plugin: checking starts the tunnel now, unchecking disconnects it now.',
         token: 'frps auth token',
         save: 'Save',
         saveToken: 'Save token',
@@ -422,6 +428,7 @@ window.__ModuleLoader__.load({
       if (expected.configuredBinaryPath !== undefined && String(status.configuredBinaryPath ?? '') !== expected.configuredBinaryPath) return false;
       if (expected.hasFrpsToken !== undefined && Boolean(status.hasFrpsToken) !== expected.hasFrpsToken) return false;
       if (expected.hasLoginPassword !== undefined && Boolean(status.hasLoginPassword) !== expected.hasLoginPassword) return false;
+      if (expected.autoStart !== undefined && Boolean(status.autoStart) !== expected.autoStart) return false;
       return true;
     };
 
@@ -941,6 +948,24 @@ window.__ModuleLoader__.load({
               : null,
             proxyStateLabel ? h('span', { style: styles.badge }, t.proxyState + ': ' + proxyStateLabel) : null,
           ),
+          // A policy, not a second start button: it says when the tunnel comes
+          // back, and the hint has to admit that saving it reloads the plugin
+          // and therefore starts or stops the tunnel right now.
+          h(
+            'label',
+            { style: styles.row },
+            h('span', { style: styles.label }, t.autoStart),
+            h('input', {
+              type: 'checkbox',
+              checked: Boolean(status?.autoStart),
+              disabled: busy,
+              onChange: (event) => {
+                const next = event.target.checked;
+                void save('setAutoStart', { autoStart: next }, { what: 'autoStart', expect: { autoStart: next } });
+              },
+            }),
+          ),
+          h('p', { style: styles.hint }, t.autoStartHint),
           h(
             'div',
             { style: styles.row },
