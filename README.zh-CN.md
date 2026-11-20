@@ -263,7 +263,7 @@ src/
   client.js           Web 面板（plugins.bundle.config 插槽）
 locale/               面板标题与描述（en、zh）
 docs/                 架构文档与插件详情页
-test/                 node:test 测试（116 个）
+test/                 node:test 测试（124 个）
 ```
 
 ```sh

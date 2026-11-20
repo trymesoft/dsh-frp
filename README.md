@@ -289,7 +289,7 @@ src/
   client.js           Web panel (plugins.bundle.config slot)
 locale/               Panel titles and descriptions (en, zh)
 docs/                 Architecture and plugin detail pages
-test/                 node:test suites (116 tests)
+test/                 node:test suites (124 tests)
 ```
 
 ```sh
