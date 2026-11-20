@@ -308,6 +308,21 @@ export function createPanelApi(deps) {
     return { restartRequired: true };
   }
 
+  /**
+   * The panel's auto-start switch.
+   *
+   * Stricter than setFrpsConfig's Boolean(...) coercion on purpose: a scripted
+   * caller sending the string "false" would silently *enable* the entrance,
+   * which is the one mistake this setting must not swallow.
+   */
+  async function setAutoStart(payload) {
+    if (typeof payload?.autoStart !== 'boolean') {
+      throw invalid('invalid-auto-start', 'autoStart must be a boolean', { field: 'autoStart', value: payload?.autoStart });
+    }
+    await deps.editor.edit((config) => ({ ...config, autoStart: payload.autoStart }));
+    return { restartRequired: true };
+  }
+
   async function chooseBinary(payload) {
     const mode = payload?.mode;
     if (mode === 'path') {
@@ -333,6 +348,7 @@ export function createPanelApi(deps) {
     setLogin,
     setFrpsToken,
     setFrpsConfig,
+    setAutoStart,
     chooseBinary,
     download,
   };
