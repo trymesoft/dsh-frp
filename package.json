@@ -45,8 +45,8 @@
     "icon.svg"
   ],
   "scripts": {
-    "test": "node --test test/",
-    "check": "node --check src/index.js && node --check src/client.js && node --check src/gateway.js && node --check src/gateway-session.js && node --check src/header-rules.js && node --check src/frpc-config.js && node --check src/frpc-manager.js && node --check src/status-routes.js && node --test test/",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/index.js && node --check src/client.js && node --check src/gateway.js && node --check src/gateway-session.js && node --check src/header-rules.js && node --check src/frpc-config.js && node --check src/frpc-manager.js && node --check src/status-routes.js && node --test test/*.test.js",
     "prepack": "npm run check"
   },
   "publishConfig": {
