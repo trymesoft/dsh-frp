@@ -162,6 +162,51 @@ test('the panel renders its sections and the security notice', () => {
   }
 });
 
+test('a save is confirmed by the autoStart it asked for', () => {
+  const entry = moduleEntry();
+  const Client = entry.factory(() => fakeReact());
+  assert.equal(Client.satisfies({ autoStart: true }, { autoStart: true }), true);
+  assert.equal(Client.satisfies({ autoStart: false }, { autoStart: true }), false);
+  assert.equal(Client.satisfies({ state: 'stopped' }, {}), true, 'an unrelated save ignores the field');
+});
+
+test('the runtime card offers an auto-start switch that saves on click', async () => {
+  const entry = moduleEntry();
+  const Client = entry.factory(() => fakeReact());
+  const { ctx, registered, calls } = makeClientCtx();
+  const t = Client.messages.en;
+  ctx.connection.rpc.call = async (prefix, endpoint, payload) => {
+    calls.push({ prefix, endpoint, payload });
+    return { ok: true, value: { state: 'stopped', missing: [], logsTail: [], autoStart: true } };
+  };
+  Client.apply(ctx);
+  const tree = registered[0].component(registered[0].options.inject());
+
+  const labels = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) return node.forEach(walk);
+    if (node.type === 'label') labels.push(node);
+    walk(node.props?.children);
+  };
+  walk(tree);
+
+  const label = labels.find((node) => collectText(node).join('').includes(t.autoStart));
+  assert.ok(label, 'the auto-start switch is rendered');
+  assert.ok(collectText(tree).join(' ').includes(t.autoStartHint), 'the hint states the effect');
+
+  const input = label.props.children[1];
+  assert.equal(input.props.type, 'checkbox');
+  assert.equal(input.props.checked, false, 'no status yet, so the box is unchecked rather than guessed');
+
+  input.props.onChange({ target: { checked: true } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    calls.find((record) => record.endpoint === 'setAutoStart'),
+    { prefix: '/dsh-frp', endpoint: 'setAutoStart', payload: { autoStart: true } },
+  );
+});
+
 test('the tunnel can be stopped from more than just the running state', () => {
   const entry = moduleEntry();
   const Client = entry.factory(() => fakeReact());
