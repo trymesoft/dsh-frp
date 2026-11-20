@@ -248,6 +248,28 @@ test('chooseBinary writes the path through the editor and echoes restartRequired
   assert.deepEqual(download, { restartRequired: true });
 });
 
+test('setAutoStart persists the flag through the config editor', async () => {
+  const { deps, edits, getConfig } = makeDeps({ config: { ...GOOD_CONFIG, autoStart: false } });
+  const api = createPanelApi(deps);
+  const result = await api.endpoint('setAutoStart', { autoStart: true });
+  assert.deepEqual(result, { restartRequired: true });
+  assert.equal(getConfig().autoStart, true, 'the persisted config carries the new value');
+  assert.equal(edits.length, 1, 'the change goes through the config editor');
+});
+
+test('setAutoStart refuses anything but a boolean', async () => {
+  const { deps, edits } = makeDeps({ config: { ...GOOD_CONFIG, autoStart: false } });
+  const api = createPanelApi(deps);
+  for (const payload of [{ autoStart: 'false' }, { autoStart: 0 }, {}, undefined]) {
+    await assert.rejects(() => api.endpoint('setAutoStart', payload), (error) => {
+      assert.equal(error.code, 'invalid-auto-start');
+      assert.equal(error.details.field, 'autoStart');
+      return true;
+    });
+  }
+  assert.equal(edits.length, 0, 'a refused value never reaches the config editor');
+});
+
 test('setFrpsToken and getLogs round-trip', async () => {
   const { deps, store } = makeDeps();
   const api = createPanelApi(deps);
