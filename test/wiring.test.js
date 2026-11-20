@@ -51,6 +51,9 @@ async function withTempHome(fn) {
 async function bootPlugin({ config = {}, editor, withConfigEditor = true, entry } = {}) {
   const registered = [];
   const disposers = [];
+  // Captured so a test can tell which branch of the activation path ran, when
+  // the branch itself is the behaviour under test.
+  const logs = [];
   let currentConfig = { ...Config, ...config };
   const fiberEntry = entry ?? {
     options: { id: 'dsh-frp', name: 'dsh-frp', config: {} },
@@ -87,7 +90,7 @@ async function bootPlugin({ config = {}, editor, withConfigEditor = true, entry 
     effect: (fn) => {
       disposers.push(fn());
     },
-    logger: { info: () => {}, warn: () => {} },
+    logger: { info: (message) => void logs.push(String(message)), warn: (message) => void logs.push(String(message)) },
   };
   await apply(ctx, currentConfig);
   const close = async () => {
@@ -99,7 +102,7 @@ async function bootPlugin({ config = {}, editor, withConfigEditor = true, entry 
       }
     }
   };
-  return { handler: registered[0].handler, disposers, close, getConfig: () => currentConfig, entry: fiberEntry };
+  return { handler: registered[0].handler, disposers, close, getConfig: () => currentConfig, entry: fiberEntry, logs };
 }
 
 async function panel(handler, method, payload, rpcId) {
@@ -412,6 +415,56 @@ test('saving the values that are already live does not reload the plugin', async
       const second = await panel(handler, 'setFrpsConfig', { ...values, domain: 'DSH.example.com' }, 'rpc-2');
       assert.equal(second.body.result.ok, true);
       assert.equal(edits, 1, 'an unchanged save does not reload the plugin');
+    } finally {
+      await close();
+    }
+  });
+});
+
+test('toggling autoStart reaches the config editor once, a repeated value never does', async () => {
+  await withTempHome(async () => {
+    let edits = 0;
+    const editor = {
+      edit: async () => {
+        edits += 1;
+      },
+    };
+    const { handler, close } = await bootPlugin({ config: { autoStart: false }, editor });
+    try {
+      const first = await panel(handler, 'setAutoStart', { autoStart: true }, 'rpc-1');
+      assert.equal(first.body.result.ok, true);
+      assert.equal(edits, 1, 'a real change is persisted');
+
+      // The reload an edit triggers drops the running tunnel, so re-sending the
+      // value that is already live must not reach the config editor at all.
+      const second = await panel(handler, 'setAutoStart', { autoStart: true }, 'rpc-2');
+      assert.equal(second.body.result.ok, true);
+      assert.equal(edits, 1, 'an unchanged save does not reload the plugin');
+
+      // The panel confirms a save from the status it polls with `expect`, so the
+      // round-trip has to land in status for the confirmation to ever resolve.
+      const after = await panel(handler, 'status', {}, 'rpc-3');
+      assert.equal(after.body.result.value.autoStart, true, 'status carries the saved value');
+    } finally {
+      await close();
+    }
+  });
+});
+
+test('autoStart on an unconfigured profile loads without starting anything', async () => {
+  await withTempHome(async () => {
+    const { handler, close, logs } = await bootPlugin({ config: { autoStart: true } });
+    try {
+      const { body } = await panel(handler, 'status', {}, 'rpc-1');
+      assert.equal(body.result.value.state, 'not-configured', 'the gate still decides, not the flag');
+      // Status alone would read `not-configured` even if the flag had bypassed
+      // the gate and tried to fetch the binary, because the state is derived
+      // from the gate either way. The skip line is the branch: it is logged
+      // before any binary work, so its presence means no download was attempted.
+      assert.ok(
+        logs.some((line) => line.includes('autoStart skipped, missing')),
+        'the load path took the skip branch instead of touching the binary',
+      );
     } finally {
       await close();
     }
