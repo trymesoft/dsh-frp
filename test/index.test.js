@@ -88,6 +88,17 @@ test('the schema normalizes an empty row to the documented defaults', () => {
   assert.equal(Object.prototype.hasOwnProperty.call(defaults, 'token'), false, 'no secret keys in Config');
 });
 
+test('a hand-edited string autoStart fails closed instead of enabling the entrance', () => {
+  // A quoted "false" in cordis.patch.yml is a plausible typo. Boolean(...) would
+  // read it as true and turn the public entrance on at every boot, so the flag
+  // the endpoint refuses to coerce must not be coerced on the way in either.
+  for (const raw of ['false', '0', 'no']) {
+    const result = Config['~standard'].validate({ autoStart: raw });
+    assert.equal(result.value.autoStart, false, JSON.stringify(raw) + ' must not start the tunnel');
+  }
+  assert.equal(Config['~standard'].validate({ autoStart: true }).value.autoStart, true, 'a real boolean still counts');
+});
+
 test('apply mounts the panel prefix with a fence and answers status', async () => {
   await withTempHome(async (home) => {
     const realFetch = globalThis.fetch;
