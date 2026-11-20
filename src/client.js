@@ -302,6 +302,14 @@ window.__ModuleLoader__.load({
     /** The tunnel can be stopped while it is up, starting, or stuck in error. */
     const canStop = (state) => state === 'running' || state === 'starting' || state === 'error' || state === 'downloading';
 
+    /**
+     * The auto-start box shows the persisted value, never local state: the
+     * control saves on click, so a refused save must not leave a tick behind.
+     * A Host too old to send the field, or a first render before status
+     * arrives, reads as off rather than guessing.
+     */
+    const autoStartChecked = (status) => Boolean(status?.autoStart);
+
     /** A dead gateway is its own state: the tunnel is not merely "stopped". */
     const gatewayWarning = (status, t) => {
       if (!status || status.gateway !== 'error') return undefined;
@@ -957,7 +965,7 @@ window.__ModuleLoader__.load({
             h('span', { style: styles.label }, t.autoStart),
             h('input', {
               type: 'checkbox',
-              checked: Boolean(status?.autoStart),
+              checked: autoStartChecked(status),
               disabled: busy,
               onChange: (event) => {
                 const next = event.target.checked;
@@ -1034,6 +1042,7 @@ window.__ModuleLoader__.load({
       name: NAMESPACE,
       inject: ['slots', 'locale', 'connection'],
       canStop,
+      autoStartChecked,
       gatewayWarning,
       needsChecksumConsent,
       unwrapRpcResult,
