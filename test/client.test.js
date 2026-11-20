@@ -3,11 +3,19 @@ import assert from 'node:assert/strict';
 
 // Load client.js the way the GUI does: through window.__ModuleLoader__.
 const loaded = [];
+const sessionData = new Map();
 globalThis.window = {
   __ModuleLoader__: {
     load: (entry) => {
       loaded.push(entry);
     },
+  },
+  // The panel keeps its pending-save record here. A browser-like store is what
+  // lets a test see what the panel asked the reloaded instance to look for.
+  sessionStorage: {
+    getItem: (key) => (sessionData.has(key) ? sessionData.get(key) : null),
+    setItem: (key, value) => sessionData.set(key, String(value)),
+    removeItem: (key) => sessionData.delete(key),
   },
 };
 
@@ -170,6 +178,15 @@ test('a save is confirmed by the autoStart it asked for', () => {
   assert.equal(Client.satisfies({ state: 'stopped' }, {}), true, 'an unrelated save ignores the field');
 });
 
+test('the auto-start box shows the persisted value, and off when there is none', () => {
+  const entry = moduleEntry();
+  const Client = entry.factory(() => fakeReact());
+  assert.equal(Client.autoStartChecked({ autoStart: true }), true);
+  assert.equal(Client.autoStartChecked({ autoStart: false }), false);
+  assert.equal(Client.autoStartChecked({}), false, 'an older Host that never sends the field reads as off');
+  assert.equal(Client.autoStartChecked(undefined), false, 'no status yet reads as off, not as on');
+});
+
 test('the runtime card offers an auto-start switch that saves on click', async () => {
   const entry = moduleEntry();
   const Client = entry.factory(() => fakeReact());
@@ -200,6 +217,10 @@ test('the runtime card offers an auto-start switch that saves on click', async (
   assert.equal(input.props.checked, false, 'no status yet, so the box is unchecked rather than guessed');
 
   input.props.onChange({ target: { checked: true } });
+  // The pending record is how the reloaded panel knows what to confirm. Without
+  // its `expect`, every toggle would report "submitted but unconfirmed" instead
+  // of "saved", which is the complaint this switch exists to answer.
+  assert.deepEqual(JSON.parse(window.sessionStorage.getItem('dsh-frp:pending-save')).expect, { autoStart: true });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(
     calls.find((record) => record.endpoint === 'setAutoStart'),
