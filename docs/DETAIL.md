@@ -49,7 +49,9 @@ server {
 4. Set the **public sign-in** username and a password of at least 12 characters.
 5. Click **Start tunnel**; when the status is **running**, copy the public URL.
 
-When DSH restarts, `autoStart` restores the tunnel if the start prerequisites still hold.
+When DSH restarts, `autoStart` restores the tunnel if the start prerequisites still hold. The
+switch is in the **frpc runtime** card, and toggling it reloads the plugin: it starts or stops the
+tunnel right away rather than at the next restart.
 
 ## Security
 
