@@ -65,7 +65,7 @@ flowchart TB
 | [`header-rules.js`](../src/header-rules.js) | Pure functions for hop-by-hop stripping, framing-conflict detection, XFF parsing, request normalization, and response rewriting. Everything security-relevant about headers lives here so it can be audited in one file. |
 | [`frpc-config.js`](../src/frpc-config.js) | Renders `frpc.toml` with TOML string escaping, port/text validation, and a per-start random proxy name. |
 | [`frpc-manager.js`](../src/frpc-manager.js) | Downloads and verifies the pinned frp release, extracts it, spawns `frpc`, polls its admin API, restarts with backoff, buffers logs, and kills the child deterministically. |
-| [`status-routes.js`](../src/status-routes.js) | The panel protocol: status composition, the start gate, the DSH cookie exchange, and one endpoint per action. Also owns the credential record keys. |
+| [`status-routes.js`](../src/status-routes.js) | The panel protocol: status composition, the start gate, the DSH cookie exchange, and one endpoint per action, including the config-writing setters `setFrpsConfig`, `setAutoStart` and `chooseBinary`. Also owns the credential record keys. |
 | [`client.js`](../src/client.js) | Browser half: a panel in the `plugins.bundle.config` slot for Plugins → frp tunnel. It owns all UI copy (Chinese and English) and polls the Host. |
 
 ## Activation sequence

@@ -175,7 +175,9 @@ Open **Plugins → frp tunnel**:
    loop) instead of hanging on "Starting".
 
 `autoStart` starts the tunnel when the plugin loads. It is off by default and honored only when
-the start gate passes.
+the start gate passes. The **frpc runtime** card sets it: the switch saves through the same config
+editor, so ticking or unticking reloads the plugin and therefore starts or stops the tunnel right
+then, not at the next boot. With no cached `frpc`, the first resume downloads the binary.
 
 ## Configuration
 
@@ -185,7 +187,7 @@ editor.
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | Mount the plugin at all. |
-| `autoStart` | `false` | Start the tunnel on plugin load when prerequisites are met. |
+| `autoStart` | `false` | Start the tunnel on plugin load when prerequisites are met. Also editable from the panel's runtime card. |
 | `publicBaseUrl` | `""` | Public entrance origin, e.g. `https://dsh.example.com` (scheme + host, no path). Also decides `Secure` / `__Host-` on the gateway cookie. |
 | `frps.serverAddr` | `""` | frps host name or IP. |
 | `frps.serverPort` | `7000` | frps `bindPort`. |
