@@ -155,7 +155,11 @@ function normalizePublicBaseUrl(value) {
 function canonicalConfig(config) {
   return {
     enabled: config?.enabled !== false,
-    autoStart: Boolean(config?.autoStart),
+    // Fail closed, unlike its neighbours: a quoted "false" in cordis.patch.yml
+    // is a plausible hand-edit typo, and Boolean() would read it as true and
+    // open the public entrance at every boot. The endpoint refuses that same
+    // coercion, so the load path must not quietly accept it.
+    autoStart: config?.autoStart === true,
     publicBaseUrl: normalizePublicBaseUrl(config?.publicBaseUrl),
     frps: {
       serverAddr: String(config?.frps?.serverAddr ?? ''),
