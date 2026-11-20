@@ -93,7 +93,8 @@ flowchart TB
    `ctx.connection.requestRejection(req)`, so only a request DSH already considers authenticated can
    drive it. That includes a public visitor who passed the gateway login, because the gateway
    forwards the panel route like any other GUI path.
-10. **AutoStart.** Only when the **start gate** passes and a binary is available.
+10. **AutoStart.** Only when the **start gate** passes; the binary is resolved first, so with an
+    empty cache the resume downloads `frpc` before starting.
 11. **Disposal.** `ctx.effect` unsubscribes, kills frpc, disposes the route, and stops the gateway.
 
 ## Public request lifecycle
@@ -294,7 +295,7 @@ system is testable without a Host, a GUI, an frps, or the network:
 - `client.js` is loaded through a fake `window.__ModuleLoader__`, so panel helpers, copy ownership,
   and locale dictionaries are tested as data.
 
-Run `npm test` (or `npm run check` for syntax checks first). The suite contains 116 tests and
+Run `npm test` (or `npm run check` for syntax checks first). The suite contains 124 tests and
 needs no network.
 
 ## Compatibility notes
