@@ -293,7 +293,7 @@ test/                 node:test suites (124 tests)
 ```
 
 ```sh
-npm test          # node --test test/
+npm test          # node --test test/*.test.js
 npm run check     # syntax-check every module, then run the tests
 ```
 
